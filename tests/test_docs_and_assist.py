@@ -62,6 +62,29 @@ class PromptAssistTest(unittest.TestCase):
         router.load_env()
         self.assertEqual(prompt_assist.pick_model(False), "groq/openai/gpt-oss-120b")
 
+    def test_single_prompt(self):
+        seen = {}
+
+        def fake_ask(system, user_text, images, model):
+            seen.update(system=system, user=user_text, images=images)
+            return ('{"prompt": "kael_hero, silver-haired knight on a cliff", "negative": "text", '
+                    '"aspect": "21:9", "explanation": "ok"}'), {"provider": "fake", "model": "m"}
+
+        orig, prompt_assist._ask = prompt_assist._ask, fake_ask
+        try:
+            out = prompt_assist.single("Kael no penhasco", "texto da cena", ["data:image/png;base64,AA"],
+                                       characters=[{"id": "k", "name": "Kael", "look": "silver hair",
+                                                    "image_data": ["data:image/png;base64,BB"]}])
+        finally:
+            prompt_assist._ask = orig
+        self.assertIs(seen["system"], prompt_assist.SINGLE_SYSTEM)
+        self.assertIn("Kael no penhasco", seen["user"])
+        self.assertIn("texto da cena", seen["user"])
+        self.assertEqual(len(seen["images"]), 2)  # a do usuário + a da ficha
+        self.assertEqual(out["prompt"], "kael_hero, silver-haired knight on a cliff")
+        self.assertEqual(out["aspect"], "1:1")  # proporção inválida vira 1:1
+        self.assertEqual((out["negative"], out["characters_used"], out["provider"]), ("text", ["k"], "fake"))
+
 
 class McpTest(unittest.TestCase):
     def test_tools_list_and_old_names(self):

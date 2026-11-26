@@ -6,6 +6,7 @@ Auxiliar de prompt para geração de imagens.
 - plan(): a partir de um pedido ("página de 5 quadros estilo X..."), um texto de referência e
   imagens de referência (personagens), monta um prompt completo e independente POR QUADRO,
   repetindo a descrição visual dos personagens em todos (consistência).
+- single(): o mesmo, mas para UMA imagem: devolve um prompt pronto para a caixa de geração.
 - fix(): recebe o prompt usado, o que saiu errado e (opcional) a imagem gerada, e devolve um
   prompt corrigido com reforços e exclusões adequados ao tipo de erro.
 - O modelo é escolhido automaticamente entre os provedores disponíveis (com imagens: modelos
@@ -108,6 +109,22 @@ How to fix:
   colors/lighting -> exact palette and light direction; blurry/low detail -> "sharp focus, highly detailed, clean line art".
 - If you see the image, use it: describe precisely what is wrong in it and counter it.
 - Keep the prompt self-contained and under ~900 characters (shorter for pixel-art generators).
+"""
+
+
+SINGLE_SYSTEM = """You are a prompt engineer for AI image generators. The user (usually writing in Portuguese) describes ONE image
+they want, possibly with a reference text, character sheets and reference images.
+
+Return ONLY a JSON object: {"prompt": "complete self-contained English prompt", "negative": "comma separated things to avoid", "aspect": "16:9|4:3|1:1|3:4|9:16", "explanation": "1-2 short sentences in Brazilian Portuguese saying what you emphasized"}
+
+Rules:
+- One single image (not a comic page, not panels). If the request asks for several images, describe the main one.
+- Put the main subject and action first, then setting, composition/shot, lighting, color palette and art style.
+- Restate the full visual look of every character in the image (hair, eyes, outfit, colors, body type); use the
+  character sheets and reference images for that. If a character sheet has a trigger word, include it.
+- Translate everything to English; keep proper names. Never add text/lettering unless the user asks.
+- Choose the aspect that fits the composition (portrait character -> 3:4, landscape scene -> 16:9, icon -> 1:1).
+- Keep it under ~900 characters (much shorter for pixel-art generators, as the target hint says).
 """
 
 
@@ -302,6 +319,42 @@ def plan(instruction, text="", images=None, model=None, generator="pollinations"
     data["provider"] = info.get("provider")
     data["images_used"] = len(images)
     return data
+
+
+def single(instruction, text="", images=None, model=None, generator="pollinations", characters=None):
+    """Um prompt só (uma imagem), a partir do pedido, texto de referência, fichas e imagens."""
+    images = list(images or [])
+    chars = characters or []
+    user_images = len(images)
+    for c in chars:
+        for u in c.get("image_data") or []:
+            if len(images) < 6:
+                images.append(u)
+    request = (instruction or "").strip() or "(use the reference text below)"
+    parts = [f"REQUEST:\n{request}"]
+    if text and text.strip():
+        parts.append(f"REFERENCE TEXT:\n{text.strip()}")
+    if chars:
+        import characters as charmod
+        parts.append(charmod.prompt_block(chars))
+    if images:
+        parts.append(f"{len(images)} reference image(s) attached: the first {user_images} from the user"
+                     + (", the rest from the character sheets above." if len(images) > user_images else "."))
+    parts.append(GENERATOR_HINTS.get(generator, GENERATOR_HINTS["pollinations"]))
+    data, info, errors = _ask_json(SINGLE_SYSTEM, "\n\n".join(parts), images, candidate_models(bool(images), model),
+                                   lambda d: bool((d.get("prompt") or "").strip()))
+    if data is None:
+        raw = next((e[1] for e in errors if isinstance(e, tuple)), "")
+        if not raw.strip():
+            raise AssistError("Nenhum modelo devolveu o prompt (" + "; ".join(e for e in errors if not isinstance(e, tuple))[:300]
+                              + "). Tente de novo ou escolha outro modelo do auxiliar.")
+        data = {"prompt": raw.strip()[:1500], "explanation": "O modelo não respondeu no formato esperado; veio o texto puro."}
+    if data.get("aspect") not in ("16:9", "4:3", "1:1", "3:4", "9:16"):
+        data["aspect"] = "1:1"
+    return {"prompt": data["prompt"].strip(), "negative": (data.get("negative") or "").strip(),
+            "aspect": data["aspect"], "explanation": (data.get("explanation") or "").strip(),
+            "characters_used": [c.get("id") for c in chars], "images_used": len(images),
+            "model": info.get("model"), "provider": info.get("provider")}
 
 
 def describe_character(images, name="", hint="", model=None):

@@ -525,7 +525,8 @@ class StudioHandler(BaseHTTPRequestHandler):
             if not self._guard("imagens", check_origin=True):
                 return
             req = self._read_json(body)
-            if not (req.get("instruction") or "").strip():
+            single = req.get("mode") == "single"
+            if not (req.get("instruction") or "").strip() and not (single and (req.get("text") or "").strip()):
                 self._send_json(400, {"ok": False, "message": "Escreva o que você quer (ex.: página de 5 quadros...)."})
                 return
             images = [u for u in (req.get("images") or []) if isinstance(u, str) and u.startswith("data:image/")][:6]
@@ -536,7 +537,7 @@ class StudioHandler(BaseHTTPRequestHandler):
             # fichas: as marcadas no painel + (opcional) as citadas pelo nome no pedido/texto
             ids = [i for i in (req.get("characters") or []) if isinstance(i, str)]
             if req.get("auto_characters", True):
-                ids += characters.detect(req["instruction"], req.get("text") or "")
+                ids += characters.detect(req.get("instruction") or "", req.get("text") or "")
             chars = []
             for cid in dict.fromkeys(ids):
                 c = characters.get(cid)
@@ -545,6 +546,11 @@ class StudioHandler(BaseHTTPRequestHandler):
                     c["image_data"] = [u for u in (characters.image_data_url(n) for n in c.get("images", [])[:2]) if u]
                     chars.append(c)
             try:
+                if single:
+                    out = prompt_assist.single(req.get("instruction") or "", req.get("text") or "", images[:6],
+                                               req.get("model"), req.get("generator") or "pollinations", characters=chars[:6])
+                    self._send_json(200, {"ok": True, **out})
+                    return
                 plan = prompt_assist.plan(req["instruction"], req.get("text") or "", images[:6],
                                           req.get("model"), req.get("generator") or "pollinations",
                                           characters=chars[:6], layout=req.get("layout") or "",

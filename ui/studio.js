@@ -331,6 +331,7 @@ function onAssistToggle() {
   if (on) { loadLayouts(); loadCharacters(); }
   document.getElementById('assist-panel').style.display = on ? '' : 'none';
   document.getElementById('img-send').textContent = on ? 'Planejar quadros' : 'Gerar Arte';
+  document.getElementById('assist-single').style.display = on ? '' : 'none';
   document.getElementById('img-input').placeholder = on
     ? 'O que você quer? Ex.: "página de 5 quadros estilo anime shonen dos anos 80 com os personagens das imagens; cada parágrafo é um quadro"'
     : (PIX_HINTS[document.getElementById('img-provider').value] || '');
@@ -385,6 +386,43 @@ async function fixImagePrompt(d, btn) {
   } catch (e) {
     alert('Não deu para corrigir: ' + e.message);
     setStatus('Falha ao corrigir o prompt');
+  } finally { btn.disabled = false; }
+}
+
+async function assistSinglePrompt() {
+  const instruction = document.getElementById('img-input').value.trim();
+  const text = document.getElementById('assist-text').value;
+  if (!instruction && !text.trim()) { alert('Escreva na caixa de baixo o que você quer na imagem (ou cole um texto de referência).'); return; }
+  const btn = document.getElementById('assist-single');
+  btn.disabled = true;
+  setStatus('O auxiliar está escrevendo o prompt' + (refs.length ? ' e analisando ' + refs.length + ' imagem(ns)' : '') + '...');
+  try {
+    const images = [], image_names = [];
+    for (const r of refs) {
+      if (r.name) image_names.push(r.name);
+      else images.push(await shrinkDataUrl(r.data));
+    }
+    const resp = await fetch('/api/prompt-assist', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'single', instruction, text, images, image_names,
+                             model: document.getElementById('assist-model').value,
+                             generator: document.getElementById('img-provider').value,
+                             characters: [...selectedChars], auto_characters: true }) });
+    const d = await resp.json().catch(() => ({}));
+    if (!resp.ok || !d.ok) throw new Error(d.message || ('HTTP ' + resp.status));
+    (d.characters_used || []).forEach(id => selectedChars.add(id));
+    renderCharChips();
+    document.getElementById('assist-on').checked = false;
+    onAssistToggle();
+    const asp = document.getElementById('img-aspect');
+    if (asp && d.aspect && [...asp.options].some(o => o.value === d.aspect)) asp.value = d.aspect;
+    const inp = document.getElementById('img-input');
+    inp.value = d.prompt + (d.negative ? '\nAvoid: ' + d.negative : '');
+    inp.focus();
+    setStatus('Prompt escrito por ' + (d.provider || '') + ' / ' + (d.model || '') +
+              (d.explanation ? ' — ' + d.explanation : '') + ' Revise e clique em Gerar Arte.');
+  } catch (e) {
+    alert('O auxiliar não conseguiu escrever o prompt: ' + e.message);
+    setStatus('Falha no auxiliar de prompt');
   } finally { btn.disabled = false; }
 }
 
