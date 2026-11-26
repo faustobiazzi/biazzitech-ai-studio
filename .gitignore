@@ -1,0 +1,16 @@
+#Python & Ambiente
+__pycache__/
+*.pyc
+.env
+output/
+
+# SO & Editores
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
+
+# Build do .exe
+build/
+dist/
+__pycache__/

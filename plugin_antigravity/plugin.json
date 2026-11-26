@@ -1,0 +1,12 @@
+{
+  "name": "biazzitech-ai-studio",
+  "displayName": "BiazziTech AI Studio",
+  "description": "Painel lateral e proxy OpenAI local (porta 9090) com dropdown de modelos (DeepSeek, GPT-5.3 Codex, Flux, Animagine) e zero consumo de tokens do chat.",
+  "version": "1.0.0",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "Abra o painel lateral BiazziTech AI Studio",
+    "Verifique o status do servidor local na porta 9090",
+    "Gere um concept art dieselpunk usando o Pollinations"
+  ]
+}

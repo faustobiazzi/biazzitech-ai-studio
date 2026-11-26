@@ -1,0 +1,21 @@
+{
+  "command": "python",
+  "args": [
+    "studio_server.py",
+    "9090"
+  ],
+  "description": "Painel BiazziTech AI Studio com dropdown de modelos (DeepSeek/Codex + Pollinations) e Proxy OpenAI na porta 9090.",
+  "display_name": "BiazziTech AI Studio",
+  "has_web_ui": true,
+  "restart_policy": "always",
+  "ui_config": {
+    "display_name": "BiazziTech AI Studio",
+    "views": [
+      {
+        "entrypoint": "SIDECAR_UI_ENTRYPOINT_AUX_PANE",
+        "path": "/ui.html",
+        "title": "BiazziTech AI Studio"
+      }
+    ]
+  }
+}

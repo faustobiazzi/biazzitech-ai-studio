@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BiazziTech AI Studio — Zero Chat Tokens</title>
+<link rel="stylesheet" href="/ui/studio.css">
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <span>⚙ BiazziTech AI Studio</span>
+    <span class="badge">0% Tokens Chat</span>
+    <span id="user-chip" class="user-chip" style="display:none"></span>
+    <button class="coffee-btn" onclick="openCoffee()" title="Apoie o desenvolvimento">☕ Pague um cafézinho</button>
+  </div>
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="chat" onclick="switchTab('chat', this)">Código & Lore</button>
+    <button class="tab-btn" data-tab="image" onclick="switchTab('image', this)">Imagens</button>
+    <button class="tab-btn" data-tab="providers" onclick="switchTab('providers', this)">Provedores</button>
+    <button class="tab-btn" data-tab="access" onclick="switchTab('access', this); loadAccess()">Acesso</button>
+  </div>
+</header>
+
+<!-- FICHAS DE PERSONAGEM -->
+<div id="char-overlay" class="overlay" style="display:none" onclick="if (event.target === this) closeCharacters()">
+  <div class="modal-box" role="dialog" aria-labelledby="char-title">
+    <div class="modal-head">
+      <h2 id="char-title">👤 Fichas de personagem</h2>
+      <div>
+        <button class="mini-btn key-save" onclick="openCharForm()">+ Nova ficha</button>
+        <button class="mini-btn" onclick="closeCharacters()">Fechar</button>
+      </div>
+    </div>
+    <div class="ref-name">A ficha guarda a aparência do personagem (descrição + até 4 imagens). Quando o nome ou um apelido aparece no pedido ou no texto, o auxiliar usa a ficha sozinho e repete a mesma descrição em todos os quadros.</div>
+    <div id="char-form-slot"></div>
+    <div id="char-list" class="char-list"></div>
+  </div>
+</div>
+
+<!-- EXPORTAR PARA O GODOT -->
+<div id="godot-overlay" class="overlay" style="display:none" onclick="if (event.target === this) closeGodot()">
+  <div class="modal-box" role="dialog" aria-labelledby="godot-title">
+    <div class="modal-head">
+      <h2 id="godot-title">🎮 Exportar para o Godot 4</h2>
+      <button class="mini-btn" onclick="closeGodot()">Fechar</button>
+    </div>
+    <div id="godot-body"></div>
+  </div>
+</div>
+
+<!-- APOIO: pague um cafézinho pro dev -->
+<div id="coffee-overlay" class="overlay" style="display:none" onclick="if (event.target === this) closeCoffee()">
+  <div class="coffee-box" role="dialog" aria-labelledby="coffee-title">
+    <div class="coffee-heart">❤</div>
+    <h2 id="coffee-title">☕ Pague um Cafézinho pro Dev!</h2>
+    <p class="coffee-desc">O BiazziTech AI Studio é um projeto independente, feito com dedicação e sem anúncios. Se ele te ajudou nos seus projetos, apoie a evolução com qualquer valor via PIX ou PicPay!</p>
+
+    <div class="coffee-card">
+      <div class="coffee-card-title pix">▦ Opção 1: PIX</div>
+      <div class="coffee-label">Chave PIX (E-mail):</div>
+      <div class="coffee-value" id="coffee-pix"></div>
+      <div class="coffee-label muted" id="coffee-benef"></div>
+      <button class="coffee-main pix" onclick="copyCoffee('pix')">⧉ Copiar Chave PIX</button>
+    </div>
+
+    <div class="coffee-card">
+      <div class="coffee-card-title picpay"><span class="pp-badge">P</span> Opção 2: PicPay (Alternativa)</div>
+      <div class="coffee-label">Usuário PicPay:</div>
+      <div class="coffee-value big" id="coffee-picpay"></div>
+      <div class="coffee-row">
+        <button class="coffee-outline" onclick="copyCoffee('picpay')" id="coffee-copy-pp">⧉ Copiar</button>
+        <a class="coffee-main picpay" id="coffee-pp-link" target="_blank" rel="noopener">↗ Abrir PicPay</a>
+      </div>
+    </div>
+    <div id="coffee-msg" class="key-msg ok"></div>
+    <button class="mini-btn" onclick="closeCoffee()">Fechar</button>
+  </div>
+</div>
+
+<!-- LOGIN (aparece só quando há usuários cadastrados e é preciso entrar) -->
+<div id="login-overlay" class="overlay" style="display:none">
+  <form class="login-box" onsubmit="doLogin(event)">
+    <div class="brand" style="margin-bottom:6px">⚙ BiazziTech AI Studio</div>
+    <label for="login-user">Usuário</label>
+    <input id="login-user" autocomplete="username" required>
+    <label for="login-pass">Senha</label>
+    <input id="login-pass" type="password" autocomplete="current-password" required>
+    <div id="login-msg" class="key-msg err"></div>
+    <button class="primary-btn" type="submit">Entrar</button>
+  </form>
+</div>
+
+<!-- ABA 1: CHAT / GDSCRIPT / LORE -->
+<div id="view-chat" class="view active">
+  <div class="toolbar">
+    <label for="chat-model">Modelo:</label>
+    <select id="chat-model">
+      <option value="auto">Automático (rodízio entre provedores)</option>
+      <option value="gemini-flash-latest">Gemini Flash (Google, grátis)</option>
+      <option value="groq/openai/gpt-oss-120b">GPT-OSS 120B (Groq, grátis)</option>
+      <option value="groq/llama-3.3-70b-versatile">Llama 3.3 70B (Groq, grátis)</option>
+      <option value="openrouter/auto-free">Melhor modelo :free (OpenRouter)</option>
+      <option value="ollama_cloud/auto">Ollama Cloud (modelos grandes, pago)</option>
+      <option value="claude/auto">Claude Opus 5.5 (Anthropic, pago)</option>
+      <option value="chatgpt/auto">ChatGPT (OpenAI, pago)</option>
+      <option value="ollama/auto">Ollama local (privado, sem internet)</option>
+      <option value="openai/gpt-5.3-codex">GPT-5.3 Codex (Rápido / GDScript 4)</option>
+      <option value="deepseek-chat">DeepSeek Chat (Oficial + Auto-Fallback)</option>
+      <option value="deepseek-reasoner">DeepSeek R1 Reasoner (+ Auto-Fallback)</option>
+      <option value="deepseek/deepseek-v4.1-flash">DeepSeek V4.1 Flash (via Pollinations)</option>
+      <option value="openai/gpt-5.4-mini">GPT-5.4 Mini (Ultra Rápido / Texto)</option>
+      <option value="moonshotai/kimi-k3.1-pro">Kimi K3.1 Pro (Contexto Longo)</option>
+      <option value="x-ai/grok-4.6">Grok 4.6 (criativo, via Pollinations)</option>
+    </select>
+
+    <label for="chat-preset">Modo:</label>
+    <select id="chat-preset">
+      <option value="gdscript">Godot 4.7 GDScript</option>
+      <option value="lua">Lua (LÖVE, Defold, Roblox...)</option>
+      <option value="python">Python (Pygame, Ren'Py...)</option>
+      <option value="csharp">C# (Godot .NET, Unity)</option>
+      <option value="lore">Lore & Diálogos</option>
+      <option value="free">Assistente Livre</option>
+    </select>
+
+    <button class="mini-btn" onclick="clearChat()" title="Limpar histórico">Limpar</button>
+  </div>
+
+  <div id="chat-messages">
+    <div class="msg assistant">
+      <div class="msg-meta"><span>Sistema Local</span></div>Selecione qualquer modelo no dropdown acima e envie seu pedido. Tudo roda direto pelas chaves do seu <code>~/.env</code> sem consumir tokens do Antigravity!
+      <div class="coffee-banner">☕ O BiazziTech AI Studio é um projeto independente. Se ele te ajudou, <a href="#" onclick="openCoffee(); return false;">pague um cafézinho pro dev</a> via PIX ou PicPay!</div></div>
+  </div>
+
+  <div id="chat-attach-bar" class="attach-bar" style="display:none"></div>
+  <div class="composer">
+    <textarea id="chat-input" placeholder="Peça um script Godot 4, shader, diálogo de NPC ou texto de lore... (Ctrl+Enter envia)"></textarea>
+    <div class="composer-side">
+      <input id="chat-file" type="file" multiple accept=".docx,.md,.markdown,.txt,.pdf,.csv,.json,.gd" style="display:none" onchange="onChatFiles(this)">
+      <button class="mini-btn" onclick="document.getElementById('chat-file').click()" title="Anexar .docx, .md, .txt ou .pdf como referência">📎 Anexar</button>
+      <button id="chat-send" class="primary-btn" onclick="sendChat()">Enviar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ABA 2: GERADOR DE IMAGENS -->
+<div id="view-image" class="view">
+  <div class="toolbar">
+    <label for="img-provider">Gerador:</label>
+    <select id="img-provider" onchange="onImgProviderChange()">
+      <option value="pollinations">Flux / Pollinations (arte geral)</option>
+      <option value="pixellab">PixelLab (sprites, personagens, tilesets)</option>
+      <option value="retrodiffusion">Retro Diffusion (pixel art, animações)</option>
+      <option value="scenario">Scenario (modelo próprio)</option>
+    </select>
+    <span id="pix-controls" style="display:none" class="inline-controls">
+      <label for="pix-mode">Modo:</label>
+      <select id="pix-mode" onchange="onPixModeChange()"></select>
+      <label for="pix-w">Tam.:</label>
+      <input id="pix-w" type="number" min="16" max="512" step="4" value="64" style="width:64px">
+      <span>x</span>
+      <input id="pix-h" type="number" min="16" max="512" step="4" value="64" style="width:64px">
+      <label><input id="pix-transp" type="checkbox" checked> fundo transparente</label>
+      <input id="pix-model-id" placeholder="modelId da Scenario" style="width:170px;display:none">
+    </span>
+    <span id="poll-controls" class="inline-controls">
+    <label for="img-model">Modelo Visual:</label>
+    <select id="img-model">
+      <option value="flux">Flux 1 Schnell (Padrão Nítido)</option>
+      <option value="flux-pro">Flux 1.1 Pro (Alta Fidelidade)</option>
+      <option value="flux-flex">Flux 2 Flex (Detalhado)</option>
+      <option value="anime">Animagine (Anime / Concept Art)</option>
+      <option value="turbo">Z-Image Turbo (Ultra Rápido)</option>
+    </select>
+
+    <label for="img-aspect">Proporção:</label>
+    <select id="img-aspect">
+      <option value="1:1">1:1 (1024x1024)</option>
+      <option value="16:9">16:9 (1280x720)</option>
+      <option value="9:16">9:16 (720x1280)</option>
+      <option value="3:4">3:4 (768x1024)</option>
+      <option value="4:3">4:3 (1024x768)</option>
+    </select>
+    </span>
+  </div>
+  <div class="toolbar ref-bar">
+    <label>Referências:</label>
+    <input id="ref-file" type="file" multiple accept="image/png,image/jpeg,image/webp" onchange="onRefFile(this)" style="display:none">
+    <button class="mini-btn" onclick="document.getElementById('ref-file').click()">Adicionar imagens...</button>
+    <span id="ref-list" class="ref-list"></span>
+    <span id="ref-name" class="ref-name">nenhuma (até 6 — a 1ª vai para PixelLab/Retro Diffusion; todas vão para o auxiliar)</span>
+    <button id="ref-clear" class="mini-btn" style="display:none" onclick="clearRef()">Limpar</button>
+    <label class="assist-toggle"><input id="assist-on" type="checkbox" onchange="onAssistToggle()"> Auxiliar de prompt</label>
+  </div>
+
+  <div class="img-scroll">
+    <div id="assist-panel" class="assist-panel" style="display:none">
+      <div class="assist-row">
+        <label for="assist-model">Modelo do auxiliar:</label>
+        <select id="assist-model">
+          <option value="auto-assist">Automático (mais adequado disponível)</option>
+          <option value="gemini-flash-latest">Gemini Flash (vê imagens, grátis)</option>
+          <option value="claude/auto">Claude (vê imagens, pago)</option>
+          <option value="chatgpt/auto">ChatGPT (vê imagens, pago)</option>
+          <option value="groq/openai/gpt-oss-120b">GPT-OSS 120B na Groq (só texto)</option>
+          <option value="openrouter/auto-free">OpenRouter :free (só texto)</option>
+          <option value="auto">Rodízio geral</option>
+        </select>
+        <input id="assist-file" type="file" accept=".docx,.md,.markdown,.txt,.pdf" style="display:none" onchange="onAssistFile(this)">
+        <button class="mini-btn" onclick="document.getElementById('assist-file').click()">📎 Texto de .docx/.md/.pdf/.txt</button>
+        <span class="ref-name">Escreva o pedido na caixa de baixo (ex.: "página de 5 quadros estilo anime dos anos 80, cada parágrafo é um quadro") e clique em Planejar quadros.</span>
+      </div>
+      <textarea id="assist-text" placeholder="Texto de referência (opcional): cole aqui o trecho da história, roteiro ou descrição da cena..."></textarea>
+      <div class="comic-opts">
+        <div class="assist-row">
+          <label for="comic-layout">Página de quadrinho:</label>
+          <select id="comic-layout" onchange="onLayoutChange()">
+            <option value="">Sem página (quadros soltos)</option>
+            <option value="auto">Automático (o auxiliar escolhe o modelo)</option>
+          </select>
+          <canvas id="layout-preview" class="layout-preview" width="48" height="72" title="Modelo da página"></canvas>
+          <label class="ref-name"><input id="sfx-draw" type="checkbox"> pedir ao gerador para desenhar as onomatopeias (pode errar as letras; sem marcar, o painel escreve na montagem)</label>
+        </div>
+        <div class="comic-fields">
+          <label><span>Divisão da página <span class="ref-name">(opcional)</span></span>
+            <textarea id="layout-text" placeholder="Ex.: grade com quadros iguais; ou quadros dinâmicos com cortes em diagonal acompanhando a ação; o personagem do quadro 4 vaza para o quadro 3; quadro 1 bem largo como abertura"></textarea></label>
+          <label><span>Onomatopeias e efeitos <span class="ref-name">(opcional)</span></span>
+            <textarea id="sfx-text" placeholder="Ex.: quadro 2: &quot;SOC!&quot; hachurado ao lado do personagem; quadro 4: &quot;BANG!&quot; explosivo no canto de cima à direita; quadro 5: &quot;tremor&quot; tremido embaixo"></textarea></label>
+        </div>
+        <div class="assist-row">
+          <label>Personagens na cena:</label>
+          <span id="char-chips" class="char-chips"><span class="ref-name">nenhuma ficha ainda</span></span>
+          <button class="mini-btn" onclick="openCharacters()">👤 Fichas de personagem</button>
+        </div>
+      </div>
+      <div id="assist-plan"></div>
+    </div>
+    <div id="image-gallery"></div>
+  </div>
+
+  <div class="composer">
+    <textarea id="img-input" placeholder="Descreva a arte (ex: dark dieselpunk bunker corridor, eerie green emergency light, gothic soldier)..."></textarea>
+    <button id="img-send" class="primary-btn" onclick="generateImage()">Gerar Arte</button>
+  </div>
+</div>
+
+<!-- ABA 3: PROVEDORES / USO / RODÍZIO -->
+<div id="view-providers" class="view">
+  <div class="toolbar">
+    <span style="font-size:12px;color:var(--muted)">Ordem do rodízio: o primeiro provedor ATIVO responde; os que dão limite ou erro entram em espera e voltam sozinhos.</span>
+    <button class="mini-btn" onclick="loadProviders(true)">Atualizar</button>
+    <button class="mini-btn" onclick="resetProvider(null)">Zerar todas as esperas</button>
+    <button id="btn-add-custom" class="mini-btn key-save" onclick="openCustomForm()" title="Qualquer servidor compatível com a OpenAI: Ollama de outro PC, LM Studio, vLLM, um modelo aberto na nuvem...">+ Provedor personalizado</button>
+  </div>
+  <div id="custom-form-slot"></div>
+  <div id="providers-list"></div>
+</div>
+
+<!-- ABA 4: ACESSO (rede, porta, usuários) -->
+<div id="view-access" class="view">
+  <div id="access-body" class="access-body"></div>
+</div>
+
+<div class="status-line">
+  <span id="status-txt">Pronto — Endpoint OpenAI ativo em http://localhost:9090/v1</span>
+  <span id="keys-txt">Verificando chaves...</span>
+</div>
+
+<script src="/ui/studio.js"></script>
+</body>
+</html>
