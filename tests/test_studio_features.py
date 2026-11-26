@@ -68,6 +68,9 @@ class CharactersTest(unittest.TestCase):
 
 
 class LayoutsTest(unittest.TestCase):
+    def setUp(self):
+        clear_data()
+
     def test_layouts_are_valid(self):
         data = comic_layouts.layouts()
         W, H = data["page"]["width"], data["page"]["height"]
@@ -84,6 +87,61 @@ class LayoutsTest(unittest.TestCase):
         self.assertEqual(comic_layouts.get("faixas_3")["panels"][0]["aspect"], "16:9")
         self.assertEqual(comic_layouts.get("colunas_3")["panels"][0]["aspect"], "9:16")
         self.assertIn("dinamico_5", ids)
+
+    def test_import_bw_paint_outlines_and_filled(self):
+        # Desenho estilo Paint (240x300): quadro 1 com degrau (6 cantos) + 2 quadros embaixo (1 com fresta de 2 px)
+        def paint_px(x, y):
+            def box_border(x0, y0, x1, y1, gap=False):
+                if gap and y0 <= y <= y0 + 2 and x1 - 2 <= x <= x1:
+                    return False  # simula fresta de 2 px no canto
+                on_x = (x0 <= x <= x0 + 3 or x1 - 3 <= x <= x1) and y0 <= y <= y1
+                on_y = (y0 <= y <= y0 + 3 or y1 - 3 <= y <= y1) and x0 <= x <= x1
+                return on_x or on_y
+
+            # Quadro superior em "L" invertido (largo à esq., mais fino à dir.)
+            in_top = (12 <= x <= 228 and 12 <= y <= 60) or (12 <= x <= 145 and 12 <= y <= 98)
+            in_top_inner = (16 <= x <= 224 and 16 <= y <= 56) or (16 <= x <= 141 and 16 <= y <= 94)
+            top_line = in_top and not in_top_inner
+            return top_line or box_border(12, 112, 128, 286) or box_border(156, 74, 228, 286, gap=True)
+
+        raw_png = b""
+        for y in range(300):
+            raw_png += b"\x00" + b"".join(b"\x00\x00\x00\xff" if paint_px(x, y) else b"\xff\xff\xff\xff"
+                                          for x in range(240))
+
+        def chunk(t, d):
+            return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+        png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 240, 300, 8, 6, 0, 0, 0))
+               + chunk(b"IDAT", zlib.compress(raw_png)) + chunk(b"IEND", b""))
+        durl = "data:image/png;base64," + base64.b64encode(png).decode()
+
+        lay = comic_layouts.import_bw_layout("Meu Paint", durl)
+        self.assertEqual(lay["id"], "custom_meu_paint")
+        self.assertTrue(lay["custom"])
+        self.assertEqual(lay["count"], 3)
+        # Ordem de leitura: 1=topo (6 cantos), 2=baixo-esq, 3=baixo-dir
+        self.assertGreaterEqual(len(lay["panels"][0]["poly"]), 5)
+        cx2 = sum(p[0] for p in lay["panels"][1]["poly"]) / len(lay["panels"][1]["poly"])
+        cx3 = sum(p[0] for p in lay["panels"][2]["poly"]) / len(lay["panels"][2]["poly"])
+        self.assertLess(cx2, cx3)
+        self.assertIsNotNone(comic_layouts.get("custom_meu_paint"))
+        self.assertIn("custom_meu_paint", comic_layouts.prompt_list())
+
+        # Modo blocos pretos chapados no fundo branco
+        raw_blk = b""
+        for y in range(240):
+            raw_blk += b"\x00" + b"".join(
+                b"\x00\x00\x00\xff" if (20 <= x <= 220 and (20 <= y <= 105 or 125 <= y <= 220))
+                else b"\xff\xff\xff\xff" for x in range(240))
+        png_blk = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 240, 240, 8, 6, 0, 0, 0))
+                   + chunk(b"IDAT", zlib.compress(raw_blk)) + chunk(b"IEND", b""))
+        lay2 = comic_layouts.import_bw_layout("Blocos", png_blk)
+        self.assertEqual(lay2["count"], 2)
+
+        comic_layouts.delete_custom(lay["id"])
+        self.assertIsNone(comic_layouts.get(lay["id"]))
+        with self.assertRaises(comic_layouts.LayoutError):
+            comic_layouts.import_bw_layout("", png_blk)
 
 
 class PlanTest(unittest.TestCase):

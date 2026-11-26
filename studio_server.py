@@ -556,6 +556,25 @@ class StudioHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, **plan})
             return
 
+        if parsed_path == "/api/comic/layouts":
+            if not self._guard("imagens"):
+                return
+            req = self._read_json(body)
+            action = req.get("action")
+            try:
+                if action == "import":
+                    lay = comic_layouts.import_bw_layout(req.get("name") or "", req.get("data_url") or "")
+                    self._send_json(200, {"ok": True, "layout": lay,
+                                          "message": f"Modelo '{lay['name']}' criado com {lay['count']} quadro(s)."})
+                elif action == "delete":
+                    comic_layouts.delete_custom(req.get("id") or "")
+                    self._send_json(200, {"ok": True, "message": "Modelo personalizado removido."})
+                else:
+                    self._send_json(400, {"ok": False, "message": "Ação inválida."})
+            except comic_layouts.LayoutError as e:
+                self._send_json(400, {"ok": False, "message": str(e)})
+            return
+
         if parsed_path == "/api/characters":
             if not self._guard("imagens"):
                 return

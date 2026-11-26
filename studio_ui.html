@@ -235,6 +235,9 @@
             <option value="auto">Automático (o auxiliar escolhe o modelo)</option>
           </select>
           <canvas id="layout-preview" class="layout-preview" width="48" height="72" title="Modelo da página"></canvas>
+          <input id="layout-file" type="file" accept="image/png,image/bmp,image/jpeg,image/webp" style="display:none" onchange="onLayoutFile(this)">
+          <button class="mini-btn" onclick="document.getElementById('layout-file').click()" title="Importar desenho em preto e branco (ex.: feito no Paint com linhas pretas no fundo branco) como modelo de página">+ Modelo P&B</button>
+          <button id="layout-del-btn" class="mini-btn danger" style="display:none" onclick="deleteCurrentLayout()" title="Excluir este modelo personalizado">×</button>
           <label class="ref-name"><input id="sfx-draw" type="checkbox"> pedir ao gerador para desenhar as onomatopeias (pode errar as letras; sem marcar, o painel escreve na montagem)</label>
         </div>
         <div class="comic-fields">

@@ -1369,14 +1369,17 @@ function refreshKeys() { loadProviders(false); }
 // ================= QUADRINHOS: modelos de página, onomatopeias, vazamento =================
 let comicLayouts = null;        // {page, layouts: [{id, name, count, panels: [{n, poly, aspect}]}]}
 
-async function loadLayouts() {
-  if (comicLayouts) return comicLayouts;
+async function loadLayouts(force = false, selectId = null) {
+  if (comicLayouts && !force) return comicLayouts;
   try {
     const r = await fetch('/api/comic/layouts');
     if (!r.ok) return null;
     comicLayouts = await r.json();
     const sel = document.getElementById('comic-layout');
+    const prev = selectId !== null ? selectId : sel.value;
+    [...sel.options].slice(2).forEach(o => o.remove());
     comicLayouts.layouts.forEach(l => { const o = el('option', null, l.name + ' (' + l.count + ')'); o.value = l.id; sel.appendChild(o); });
+    if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
     onLayoutChange();
   } catch (e) {}
   return comicLayouts;
@@ -1404,7 +1407,66 @@ function drawLayoutThumb(canvas, lay) {
 }
 
 function onLayoutChange() {
-  drawLayoutThumb(document.getElementById('layout-preview'), layoutById(document.getElementById('comic-layout').value));
+  const lay = layoutById(document.getElementById('comic-layout').value);
+  drawLayoutThumb(document.getElementById('layout-preview'), lay);
+  const delBtn = document.getElementById('layout-del-btn');
+  if (delBtn) delBtn.style.display = lay && lay.custom ? '' : 'none';
+}
+
+async function onLayoutFile(input) {
+  const f = input.files && input.files[0];
+  input.value = '';
+  if (!f) return;
+  const defName = (f.name || 'meu_modelo').replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
+  const name = prompt_('Nome para este modelo de página:', defName || 'Meu modelo');
+  if (!name) return;
+  try {
+    const rawUrl = await new Promise((res, rej) => {
+      const fr = new FileReader();
+      fr.onload = () => res(fr.result);
+      fr.onerror = () => rej(new Error('Falha ao ler arquivo'));
+      fr.readAsDataURL(f);
+    });
+    // Converte qualquer formato (BMP/JPG/WEBP/PNG do Paint) em PNG normalizado
+    const im = await loadImg(rawUrl);
+    const maxSide = 720;
+    const sc = Math.min(1, maxSide / Math.max(im.naturalWidth || 1, im.naturalHeight || 1));
+    const c = document.createElement('canvas');
+    c.width = Math.max(16, Math.round(im.naturalWidth * sc));
+    c.height = Math.max(16, Math.round(im.naturalHeight * sc));
+    const g = c.getContext('2d');
+    g.fillStyle = '#ffffff';
+    g.fillRect(0, 0, c.width, c.height);
+    g.drawImage(im, 0, 0, c.width, c.height);
+    const r = await fetch('/api/comic/layouts', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'import', name: name.trim(), data_url: c.toDataURL('image/png') })
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.ok) throw new Error(d.message || ('HTTP ' + r.status));
+    await loadLayouts(true, d.layout.id);
+    setStatus(d.message);
+  } catch (e) {
+    alert('Não deu para importar o modelo: ' + e.message);
+  }
+}
+
+async function deleteCurrentLayout() {
+  const lay = layoutById(document.getElementById('comic-layout').value);
+  if (!lay || !lay.custom) return;
+  if (!confirm('Excluir o modelo personalizado "' + lay.name + '"?')) return;
+  try {
+    const r = await fetch('/api/comic/layouts', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'delete', id: lay.id })
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.ok) throw new Error(d.message || ('HTTP ' + r.status));
+    await loadLayouts(true, 'auto');
+    setStatus(d.message);
+  } catch (e) {
+    alert('Erro ao excluir modelo: ' + e.message);
+  }
 }
 
 const SFX_STYLES = { hachurado: 'Hachurado', explosao: 'Explosão', tremido: 'Tremido', neutro: 'Simples' };
@@ -1465,13 +1527,42 @@ function bboxOf(poly) {
            cy: ys.reduce((a, b) => a + b) / ys.length };
 }
 
-// Maior retângulo "de dentro" de um quadro de 4 cantos (sup.esq, sup.dir, inf.dir, inf.esq): nos quadros
-// inclinados, o canto da caixa externa fica fora do desenho; os efeitos usam esta área.
+function pointInPoly(px, py, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi)) inside = !inside;
+  }
+  return inside;
+}
+
+// Maior retângulo interno de um quadro (4 cantos inclinados ou N cantos côncavos vindos do Paint)
 function innerBox(poly) {
-  const [tl, tr, br, bl] = poly;
-  const x = Math.max(tl[0], bl[0]), r = Math.min(tr[0], br[0]);
-  const y = Math.max(tl[1], tr[1]), bt = Math.min(bl[1], br[1]);
-  return { x, y, w: r - x, h: bt - y, cx: (x + r) / 2, cy: (y + bt) / 2 };
+  const b = bboxOf(poly);
+  if (poly.length === 4) {
+    const [tl, tr, br, bl] = poly;
+    const x = Math.max(tl[0], bl[0]), r = Math.min(tr[0], br[0]);
+    const y = Math.max(tl[1], tr[1]), bt = Math.min(bl[1], br[1]);
+    if (r > x + 20 && bt > y + 20) return { x, y, w: r - x, h: bt - y, cx: (x + r) / 2, cy: (y + bt) / 2 };
+  }
+  const N = 24, cw = b.w / N, ch = b.h / N;
+  if (cw < 1 || ch < 1) return b;
+  const h = new Array(N).fill(0);
+  let best = { area: 0, x: b.x + b.w * 0.15, y: b.y + b.h * 0.15, w: b.w * 0.7, h: b.h * 0.7 };
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      h[c] = pointInPoly(b.x + (c + 0.5) * cw, b.y + (r + 0.5) * ch, poly) ? h[c] + 1 : 0;
+    }
+    for (let c1 = 0; c1 < N; c1++) {
+      let minH = h[c1];
+      for (let c2 = c1; c2 < N && minH > 0; c2++) {
+        if (h[c2] < minH) minH = h[c2];
+        const wPx = (c2 - c1 + 1) * cw, hPx = minH * ch, area = wPx * hPx;
+        if (area > best.area) best = { area, x: b.x + c1 * cw, y: b.y + (r - minH + 1) * ch, w: wPx, h: hPx };
+      }
+    }
+  }
+  return { x: best.x, y: best.y, w: best.w, h: best.h, cx: best.x + best.w / 2, cy: best.y + best.h / 2 };
 }
 
 function drawCover(g, im, b) {

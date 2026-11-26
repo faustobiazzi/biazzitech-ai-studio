@@ -441,5 +441,5 @@ if ($integrarAntigravity) {
 }
 Write-Host "Rodizio IA:   Gemini > Groq > OpenRouter > Ollama Cloud > DeepSeek > ChatGPT > Claude > xAI > Ollama > Pollinations" -ForegroundColor Gray
 Write-Host "Proxy OpenAI: http://localhost:$portaEscolhida/v1 (chave: local; com usuarios, use o token btk_ do usuario)" -ForegroundColor Yellow
-if ($cfgFinal.config.lan) { Write-Host "Na rede:      $((@($cfgFinal.lan_ips) | ForEach-Object { "http://$($_):$portaEscolhida" }) -join '  ')" -ForegroundColor White }
+if ($cfgFinal.lan_active) { Write-Host "Na rede:      $((@($cfgFinal.lan_ips) | ForEach-Object { "$($esquema)://$($_):$portaRede" }) -join '  ')" -ForegroundColor White }
 Write-Host "==========================================================" -ForegroundColor Cyan
