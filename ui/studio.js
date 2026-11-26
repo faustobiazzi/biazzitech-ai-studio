@@ -490,7 +490,7 @@ async function generatePanel(i, btn, thumb) {
   btn.disabled = true;
   setStatus('Gerando quadro ' + (pn.n || i + 1) + '...');
   try {
-    const data = await requestImages(currentImageRequest(prompt, pn.aspect));
+    const data = await requestImages(withCharacterLoras(currentImageRequest(prompt, pn.aspect)));
     const list = data.images || [data];
     const gal = document.getElementById('image-gallery');
     list.slice().reverse().forEach(im => gal.prepend(buildImageCard(im, prompt)));
@@ -700,7 +700,8 @@ const PIX_HINTS = {
   pollinations: 'Descreva a arte (ex: dark dieselpunk bunker corridor, eerie green emergency light, gothic soldier)...',
   pixellab: 'Descreva o sprite/personagem em inglês (ex: knight with red cape, side view). Tileset: "grass | dirt path". Animar: a ação (walking).',
   retrodiffusion: 'Descreva em inglês (ex: small slime monster, idle). Estilos "Animar referência" usam a imagem de referência.',
-  scenario: 'Descreva o asset. Informe o modelId do modelo da Scenario ao lado.'
+  scenario: 'Descreva o asset. Informe o modelId do modelo da Scenario ao lado.',
+  sdlocal: 'Descreva em inglês (ex: pixel art knight, side view, red cape). Roda no seu PC, sem internet; escolha LoRAs no botão ao lado.'
 };
 
 async function loadImgOptions() {
@@ -711,11 +712,15 @@ async function loadImgOptions() {
 
 async function onImgProviderChange() {
   const prov = document.getElementById('img-provider').value;
-  const pix = prov !== 'pollinations';
+  const sd = prov === 'sdlocal';
+  const pix = prov !== 'pollinations' && !sd;
   document.getElementById('pix-controls').style.display = pix ? '' : 'none';
-  document.getElementById('poll-controls').style.display = pix ? 'none' : '';
+  document.getElementById('poll-controls').style.display = prov === 'pollinations' ? '' : 'none';
+  document.getElementById('sd-controls').style.display = sd ? '' : 'none';
   document.getElementById('pix-model-id').style.display = prov === 'scenario' ? '' : 'none';
   document.getElementById('img-input').placeholder = PIX_HINTS[prov] || '';
+  if (!sd) document.getElementById('lora-panel').style.display = 'none';
+  if (sd) { await loadSdLocal(); return; }
   if (!pix) return;
   const opts = (await loadImgOptions())[prov] || [];
   const sel = document.getElementById('pix-mode');
@@ -731,6 +736,90 @@ async function onImgProviderChange() {
     document.getElementById('pix-w').value = 64; document.getElementById('pix-h').value = 64;
   }
   onPixModeChange();
+}
+
+// ----- Stable Diffusion local (offline, LoRAs)
+let sdStatus = null;
+const sdLoraSel = {};   // nome da LoRA -> peso
+
+async function loadSdLocal(force) {
+  if (force || !sdStatus) {
+    try { sdStatus = (await (await fetch('/api/image/options')).json()).sdlocal_status || {}; } catch (e) { sdStatus = {}; }
+  }
+  const sel = document.getElementById('sd-model');
+  const cur = sel.value;
+  sel.innerHTML = '';
+  (sdStatus.models || []).forEach(m => {
+    const o = el('option', null, m.label + (m.family === 'sdxl' ? ' (SDXL, pesado)' : ' (SD 1.5, leve)'));
+    o.value = m.file; sel.appendChild(o);
+  });
+  sel.value = cur && [...sel.options].some(o => o.value === cur) ? cur : (sdStatus.default_model || '');
+  updateLoraButton();
+  if (!sdStatus.installed) {
+    setStatus('Stable Diffusion local não instalado: rode bat\\Instalar_SD_Local_IA.bat (ele analisa a máquina e instala a versão leve).');
+  } else if (!sdStatus.enabled) {
+    setStatus('Stable Diffusion local instalado mas desligado: SDLOCAL_ENABLED=1 no ~/.env (o instalador grava).');
+  } else {
+    setStatus('Stable Diffusion local pronto' + (sdStatus.running ? ' (motor ligado).' : ': o motor liga sozinho na primeira imagem (pode levar ~1 min).'));
+  }
+}
+
+function updateLoraButton() {
+  const n = Object.keys(sdLoraSel).length;
+  const b = document.getElementById('sd-lora-btn');
+  if (b) b.textContent = 'LoRAs (' + n + ')';
+}
+
+function toggleLoraPanel() {
+  const box = document.getElementById('lora-panel');
+  if (box.style.display !== 'none') { box.style.display = 'none'; return; }
+  box.innerHTML = '';
+  box.appendChild(el('strong', null, 'LoRAs instaladas'));
+  const fam = ((sdStatus.models || []).find(m => m.file === document.getElementById('sd-model').value) || {}).family || 'sd15';
+  const loras = (sdStatus.loras || []).filter(l => !l.lcm);
+  if (!loras.length) {
+    box.appendChild(el('div', 'ref-name', 'Nenhuma LoRA ainda (a LCM do modo rápido é usada sozinha e não aparece aqui).'));
+  }
+  loras.forEach(l => {
+    const line = el('div', 'key-line');
+    const cb = el('input'); cb.type = 'checkbox'; cb.checked = l.name in sdLoraSel;
+    const w = el('input'); w.type = 'number'; w.min = -2; w.max = 2; w.step = 0.05; w.style.width = '64px';
+    w.value = sdLoraSel[l.name] ?? 0.8; w.title = 'peso (0.6 a 1.0 costuma funcionar)';
+    const sync = () => { if (cb.checked) sdLoraSel[l.name] = parseFloat(w.value) || 0.8; else delete sdLoraSel[l.name]; updateLoraButton(); };
+    cb.onchange = sync; w.oninput = sync;
+    const lab = el('label', null, ' ' + l.file); lab.prepend(cb);
+    line.appendChild(lab); line.appendChild(w);
+    box.appendChild(line);
+  });
+  box.appendChild(el('div', 'ref-name', 'Use LoRAs do mesmo tipo do modelo (' + (fam === 'sdxl' ? 'SDXL' : 'SD 1.5') +
+    '). Para adicionar: baixe o .safetensors (ex.: civitai.com, huggingface.co) e coloque em ' + (sdStatus.folder_loras || 'sdlocal\\models\\loras') +
+    '. Muitas LoRAs pedem uma palavra de ativação no prompt (veja a página dela).'));
+  const re = el('button', 'mini-btn', 'Atualizar lista');
+  re.onclick = async () => { await loadSdLocal(true); box.style.display = 'none'; toggleLoraPanel(); };
+  box.appendChild(re);
+  box.style.display = '';
+}
+
+// No SD local, soma as LoRAs e as palavras de ativação das fichas em cena ao pedido
+function withCharacterLoras(req) {
+  if (req.provider !== 'sdlocal') return req;
+  const ex = characterLoraExtras();
+  const names = new Set((req.loras || []).map(l => l.name));
+  req.loras = (req.loras || []).concat(ex.loras.filter(l => !names.has(l.name)));
+  const missing = ex.triggers.filter(t => !req.prompt.toLowerCase().includes(t.toLowerCase()));
+  if (missing.length) req.prompt = missing.join(', ') + ', ' + req.prompt;
+  return req;
+}
+
+// LoRAs e palavras de ativação das fichas citadas no plano (só para o SD local)
+function characterLoraExtras() {
+  const ids = new Set([...(currentPlan && currentPlan.characters_used || []), ...selectedChars, ...autoChars]);
+  const loras = [], triggers = [];
+  charList.filter(c => ids.has(c.id)).forEach(c => {
+    if (c.lora) loras.push({ name: c.lora, weight: c.lora_weight || 0.8 });
+    if (c.trigger) triggers.push(c.trigger);
+  });
+  return { loras, triggers };
 }
 
 function onPixModeChange() {
@@ -749,6 +838,15 @@ function currentImageRequest(prompt, aspectOverride) {
   if (provider === 'pollinations') {
     req.model = document.getElementById('img-model').value;
     req.aspect = aspectOverride || document.getElementById('img-aspect').value;
+  } else if (provider === 'sdlocal') {
+    req.model = document.getElementById('sd-model').value;
+    req.aspect = aspectOverride || document.getElementById('sd-aspect').value;
+    req.fast = document.getElementById('sd-fast').checked;
+    req.loras = Object.entries(sdLoraSel).map(([name, weight]) => ({ name, weight }));
+    req.strength = parseFloat(document.getElementById('sd-strength').value) || 0.6;
+    const r0 = refs[0];
+    if (r0 && r0.name) req.reference_name = r0.name;
+    else if (r0) req.reference_data = r0.data;
   } else {
     req.mode = document.getElementById('pix-mode').value;
     req.width = parseInt(document.getElementById('pix-w').value, 10) || 64;
@@ -770,14 +868,16 @@ async function generateImage(opts) {
   const prompt = input.value.trim();
   if (!prompt) return;
 
-  const req = currentImageRequest(prompt);
+  const req = withCharacterLoras(currentImageRequest(prompt));
   const provider = req.provider;
   if (provider === 'pollinations' && refs.length) setStatus('Aviso: o Flux/Pollinations não usa imagem de referência (use o Auxiliar de prompt para descrever os personagens).');
 
   btn.disabled = true;
   setStatus(provider === 'pollinations'
     ? 'Gerando imagem privada (' + req.model + ', ' + req.aspect + ')...'
-    : 'Gerando com ' + provider + ' (' + req.mode + ')... pode levar alguns minutos.');
+    : provider === 'sdlocal'
+      ? 'Gerando no seu PC (' + req.model + (req.loras.length ? ', ' + req.loras.length + ' LoRA(s)' : '') + ')... a 1ª imagem liga o motor e demora mais.'
+      : 'Gerando com ' + provider + ' (' + req.mode + ')... pode levar alguns minutos.');
 
   try {
     const data = await requestImages(req);
@@ -843,7 +943,9 @@ function renderProviders(data) {
     card.appendChild(head);
 
     if (!p.configured) {
-      if (p.local) {
+      if (p.id === 'sdlocal') {
+        card.appendChild(el('div', 'prov-row', 'Gerador de imagens offline (com LoRAs) desativado. Rode bat\\Instalar_SD_Local_IA.bat: ele analisa a placa de vídeo e instala a versão leve (SD 1.5) — e a pesada (SDXL), se a máquina aguentar.'));
+      } else if (p.local) {
         card.appendChild(el('div', 'prov-row', 'IA local desativada. Rode bat\\Instalar_Ollama_IA.bat (analisa a máquina antes de instalar).'));
         const a = el('a', 'key-link', 'Baixar Ollama ↗');
         a.href = p.key_url; a.target = '_blank'; a.rel = 'noopener';
@@ -1525,7 +1627,8 @@ function openCharForm(c, prefill) {
     save.disabled = true;
     try {
       const d = await charPost({ action: 'save', id: c && c.id, name: name.value, aliases: aliases.value, look: look.value,
-                                 notes: notes.value, new_images: added, remove_images: removed });
+                                 notes: notes.value, new_images: added, remove_images: removed,
+                                 lora: lora.value, lora_weight: loraW.value, trigger: trigger.value });
       msg.className = 'key-msg ok'; msg.textContent = d.message;
       selectedChars.add(d.character.id);
       slot.innerHTML = '';
@@ -1537,7 +1640,31 @@ function openCharForm(c, prefill) {
   const imgLine = el('div', 'key-line'); imgLine.appendChild(addImg); imgLine.appendChild(fromRefs); imgLine.appendChild(file);
   f.appendChild(th); f.appendChild(imgLine);
   f.appendChild(look); f.appendChild(notes);
+  // LoRA do personagem (usada pelo Stable Diffusion local)
+  const loraLine = el('div', 'key-line');
+  const lora = el('input'); lora.placeholder = 'LoRA do personagem (nome do arquivo, opcional)'; lora.value = c ? c.lora || '' : '';
+  lora.setAttribute('list', 'char-lora-options');
+  const dl = el('datalist'); dl.id = 'char-lora-options';
+  ((sdStatus && sdStatus.loras) || []).filter(l => !l.lcm).forEach(l => { const o = el('option'); o.value = l.name; dl.appendChild(o); });
+  const loraW = el('input'); loraW.type = 'number'; loraW.min = -2; loraW.max = 2; loraW.step = 0.05; loraW.style.width = '70px';
+  loraW.value = c && c.lora_weight != null ? c.lora_weight : 0.8; loraW.title = 'peso da LoRA';
+  const trigger = el('input'); trigger.placeholder = 'palavra de ativação (ex.: kael_hero)'; trigger.value = c ? c.trigger || '' : '';
+  loraLine.appendChild(lora); loraLine.appendChild(dl); loraLine.appendChild(loraW); loraLine.appendChild(trigger);
+  f.appendChild(el('div', 'ref-name', 'Stable Diffusion local: com uma LoRA treinada do personagem, ele sai igual em todos os quadros. A palavra de ativação entra sozinha no prompt.'));
+  f.appendChild(loraLine);
   const btns = el('div', 'key-line'); btns.appendChild(describe); btns.appendChild(save); btns.appendChild(cancel);
+  if (c && (c.images || []).length) {
+    const ds = el('button', 'mini-btn', '📦 Pacote para treinar LoRA');
+    ds.title = 'Baixa as imagens da ficha com legendas, no formato dos treinadores de LoRA (Civitai, kohya, OneTrainer)';
+    ds.onclick = async () => {
+      const r = await fetch('/api/characters', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                 body: JSON.stringify({ action: 'dataset', id: c.id }) });
+      if (!r.ok) { const e = await r.json().catch(() => ({})); alert(e.message || 'Não deu para gerar o pacote.'); return; }
+      const a = el('a'); a.href = URL.createObjectURL(await r.blob()); a.download = 'dataset_' + c.id + '.zip'; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    };
+    btns.appendChild(ds);
+  }
   f.appendChild(btns); f.appendChild(msg);
   slot.appendChild(f);
   name.focus();

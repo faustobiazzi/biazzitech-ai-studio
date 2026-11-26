@@ -567,6 +567,17 @@ class StudioHandler(BaseHTTPRequestHandler):
                     self._send_json(200, {"ok": True, **d})
                 elif action == "detect":
                     self._send_json(200, {"ok": True, "ids": characters.detect(req.get("text") or "")})
+                elif action == "dataset":
+                    p = characters.dataset_zip(req.get("id"))
+                    with open(p, "rb") as f:
+                        data = f.read()
+                    self.send_response(200)
+                    self._security_headers()
+                    self.send_header("Content-Type", "application/zip")
+                    self.send_header("Content-Disposition", f'attachment; filename="{os.path.basename(p)}"')
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
                 else:
                     self._send_json(400, {"ok": False, "message": "Ação inválida."})
             except characters.CharacterError as e:
@@ -866,7 +877,9 @@ class StudioHandler(BaseHTTPRequestHandler):
             return
 
         opts = {k: payload.get(k) for k in ("mode", "width", "height", "transparent", "model_id", "frames", "tile",
-                                            "strength")}
+                                            "strength", "model", "aspect", "loras", "negative", "steps")}
+        if "fast" in payload:
+            opts["fast"] = payload.get("fast")
         opts["prompt"] = prompt
         opts["reference"] = reference
         try:
@@ -880,7 +893,8 @@ class StudioHandler(BaseHTTPRequestHandler):
 
         stamp = int(time.time())
         out_dir = get_output_images_dir()
-        label_model = f"{provider}/{mode or 'padrao'}"
+        label_model = "SD local" if provider == "sdlocal" else f"{provider}/{mode or 'padrao'}"
+        mode = mode or ("local" if provider == "sdlocal" else "")
         images = []
         for i, (data, ext, label) in enumerate(results):
             safe = re.sub(r"[^\w-]", "_", f"{provider}_{mode}_{label}")[:60]
@@ -892,7 +906,8 @@ class StudioHandler(BaseHTTPRequestHandler):
                 "model": f"{label_model} · {label}",
                 "prompt": prompt,
                 "provider": provider,
-                "settings": {k: payload.get(k) for k in ("mode", "width", "height", "transparent", "model_id")},
+                "settings": {k: payload.get(k) for k in ("mode", "width", "height", "transparent", "model_id",
+                                                          "model", "aspect", "loras", "fast", "strength")},
                 "width": opts.get("width") or "",
                 "height": opts.get("height") or "",
                 "saved_path": out_path,

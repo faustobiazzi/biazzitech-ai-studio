@@ -187,11 +187,20 @@ PROVIDERS.update({
         "kind": "image",
         "free": False,
     },
+    "sdlocal": {
+        "label": "Stable Diffusion local (offline, LoRAs)",
+        "base": "http://127.0.0.1:7861",
+        "key_env": "SDLOCAL_ENABLED",  # 1 = ligado (o instalar_sd_local.ps1 grava)
+        "key_url": "",
+        "kind": "image",
+        "local": True,
+        "free": True,
+    },
 })
 
 DEFAULT_ORDER = ["gemini", "groq", "openrouter", "ollama_cloud", "deepseek", "openai", "anthropic", "xai",
                  "ollama", "pollinations"]
-IMAGE_PROVIDERS = ["pixellab", "retrodiffusion", "scenario"]
+IMAGE_PROVIDERS = ["pixellab", "retrodiffusion", "scenario", "sdlocal"]
 MAX_INSTANCES = 9
 ANTHROPIC_VERSION = "2026-10-21"
 # Modelos Claude que aceitam o fallback automático do servidor quando um pedido é recusado
@@ -980,6 +989,11 @@ def _record_model_issue(pid, model, code, message, seconds):
 
 
 def unavailable_reason(pid, ps=None):
+    if pid == "sdlocal":  # o painel liga o motor sozinho na hora de gerar
+        import sd_local
+        if not provider_key(pid):
+            return "desativado (rode bat\\Instalar_SD_Local_IA.bat)"
+        return None if sd_local.installed() else "não instalado (rode bat\\Instalar_SD_Local_IA.bat)"
     if not provider_key(pid):
         return "desativado (rode o instalador do Ollama)" if PROVIDERS[pid].get("local") else "sem chave"
     if PROVIDERS[pid].get("local") and not _local_server_up(PROVIDERS[pid]["base"]):

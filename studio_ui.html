@@ -154,7 +154,20 @@
       <option value="pixellab">PixelLab (sprites, personagens, tilesets)</option>
       <option value="retrodiffusion">Retro Diffusion (pixel art, animações)</option>
       <option value="scenario">Scenario (modelo próprio)</option>
+      <option value="sdlocal">Stable Diffusion local (offline, LoRAs)</option>
     </select>
+    <span id="sd-controls" style="display:none" class="inline-controls">
+      <label for="sd-model">Modelo:</label>
+      <select id="sd-model"></select>
+      <label for="sd-aspect">Proporção:</label>
+      <select id="sd-aspect">
+        <option value="1:1">1:1</option><option value="3:4">3:4</option><option value="4:3">4:3</option>
+        <option value="16:9">16:9</option><option value="9:16">9:16</option>
+      </select>
+      <label title="Usa a LoRA LCM: 4-8 passos em vez de ~22 (bem mais rápido, ótimo em PC simples)"><input id="sd-fast" type="checkbox" checked> rápido (LCM)</label>
+      <button class="mini-btn" id="sd-lora-btn" onclick="toggleLoraPanel()">LoRAs (0)</button>
+      <label title="Com imagem de referência: quanto a nova imagem pode mudar (0 = igual, 1 = livre)">força da ref. <input id="sd-strength" type="number" min="0.05" max="1" step="0.05" value="0.6" style="width:58px"></label>
+    </span>
     <span id="pix-controls" style="display:none" class="inline-controls">
       <label for="pix-mode">Modo:</label>
       <select id="pix-mode" onchange="onPixModeChange()"></select>
@@ -196,6 +209,7 @@
   </div>
 
   <div class="img-scroll">
+    <div id="lora-panel" class="assist-panel" style="display:none"></div>
     <div id="assist-panel" class="assist-panel" style="display:none">
       <div class="assist-row">
         <label for="assist-model">Modelo do auxiliar:</label>

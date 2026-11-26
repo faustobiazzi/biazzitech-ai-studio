@@ -32,6 +32,9 @@ param (
     # IA local (Ollama): perguntar | sim | nao
     [ValidateSet("perguntar", "sim", "nao")]
     [string]$Ollama = "perguntar",
+    # Imagens offline com LoRAs (Stable Diffusion local): perguntar | sim | nao
+    [ValidateSet("perguntar", "sim", "nao")]
+    [string]$SDLocal = "perguntar",
     # Porta do servidor (0 = perguntar / manter a atual; padrao 9090)
     [int]$Porta = 0,
     # Acesso por outras maquinas da rede local: perguntar | sim | nao
@@ -171,7 +174,7 @@ Write-Host "[2/6] Instalando o BiazziTech AI Studio em $appDir..." -ForegroundCo
 New-Item -ItemType Directory -Path $appDir -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $appHome "imagens") -Force | Out-Null
 
-$tools = @("biazzitech_studio.py", "studio_server.py", "provider_router.py", "image_providers.py", "access_control.py", "doc_extract.py", "prompt_assist.py", "characters.py", "comic_layouts.py", "godot_export.py", "studio_ui.html",
+$tools = @("biazzitech_studio.py", "studio_server.py", "provider_router.py", "image_providers.py", "access_control.py", "doc_extract.py", "prompt_assist.py", "characters.py", "comic_layouts.py", "godot_export.py", "sd_local.py", "studio_ui.html",
            "studio_mcp.py", "studio_cli.py", "free_image_gen.py", "pixai_gen.py")
 foreach ($t in $tools) {
     $src = Join-Path $sourceDir $t
@@ -331,7 +334,7 @@ if ($integrarAntigravity) {
         Copy-Item -Path (Join-Path $pluginSrc "README.md") -Destination (Join-Path $pluginDst "README.md") -Force
         Copy-Item -Path (Join-Path (Join-Path $pluginSrc "assets") "logo.svg") -Destination (Join-Path $assetsDst "logo.svg") -Force
         Get-ChildItem $sidecarDst -Filter "deepseek_*.py" -ErrorAction SilentlyContinue | Remove-Item -Force
-        foreach ($t in @("studio_server.py", "provider_router.py", "image_providers.py", "access_control.py", "doc_extract.py", "prompt_assist.py", "characters.py", "comic_layouts.py", "godot_export.py", "studio_ui.html")) {
+        foreach ($t in @("studio_server.py", "provider_router.py", "image_providers.py", "access_control.py", "doc_extract.py", "prompt_assist.py", "characters.py", "comic_layouts.py", "godot_export.py", "sd_local.py", "studio_ui.html")) {
             Copy-Item -Path (Join-Path $sourceDir $t) -Destination (Join-Path $sidecarDst $t) -Force
         }
         if (Test-Path $uiSrc) {
@@ -417,6 +420,14 @@ $ollamaScript = Join-Path $sourceDir "instalar_ollama.ps1"
 if (Test-Path $ollamaScript) {
     try { & $ollamaScript -Instalar $Ollama } catch { Write-Host "  [Ollama] Erro: $_" -ForegroundColor Red }
 }
+# Imagens offline com LoRAs (Stable Diffusion local / stable-diffusion.cpp); sem perguntas = nao baixa nada
+$sdScript = Join-Path $sourceDir "instalar_sd_local.ps1"
+if (Test-Path $sdScript) {
+    $sdModo = $SDLocal
+    if ($SemPerguntas -and $sdModo -eq "perguntar") { $sdModo = "nao" }
+    try { & $sdScript -Instalar $sdModo } catch { Write-Host "  [SD local] Erro: $_" -ForegroundColor Red }
+}
+
 
 # ------------------------------------------------------------ Resumo
 Write-Host "`n==========================================================" -ForegroundColor Cyan

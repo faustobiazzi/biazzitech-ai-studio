@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Geração de pixel art / assets de jogo via PixelLab, Retro Diffusion e Scenario.
+Geração de pixel art / assets de jogo via PixelLab, Retro Diffusion e Scenario, e Stable Diffusion local
+(offline, com LoRAs) pelo sd_local.py.
 
 - As chaves e o rodízio entre várias chaves do mesmo provedor vêm do provider_router
   (PIXELLAB_API_KEY, RETRODIFFUSION_API_KEY, SCENARIO_API_KEY=CHAVE:SEGREDO, e _2, _3...).
@@ -383,16 +384,26 @@ def _scenario(opts):
 
 # ---------------------------------------------------------------- entrada
 
-GENERATORS = {"pixellab": _pixellab, "retrodiffusion": _retro, "scenario": _scenario}
+def _sdlocal(opts):
+    import sd_local
+    try:
+        return sd_local.generate(opts)
+    except sd_local.SDError as e:
+        raise ImageError(str(e))
+
+
+GENERATORS = {"pixellab": _pixellab, "retrodiffusion": _retro, "scenario": _scenario, "sdlocal": _sdlocal}
 
 
 def options():
     """Opções para o painel montar os menus."""
+    import sd_local
     return {
         "pixellab": [{"id": m, "label": l} for m, l in PIXELLAB_MODES],
         "retrodiffusion": [{"id": s[0], "label": s[1], "fixed": s[2], "animation": s[3], "needs_reference": s[4]}
                            for s in RETRO_STYLES],
         "scenario": [{"id": "custom", "label": "Modelo pelo modelId"}],
+        "sdlocal_status": sd_local.status(),
     }
 
 

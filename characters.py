@@ -145,9 +145,16 @@ def save_character(data):
                 k += 1
             used.add(k)
             images.append(_store_image(cid, u, k))
+        try:
+            lora_weight = max(-2.0, min(2.0, float(data.get("lora_weight") or 0.8)))
+        except (TypeError, ValueError):
+            lora_weight = 0.8
         entry = {
             "id": cid, "name": name, "aliases": _aliases(data.get("aliases")), "look": look,
             "notes": (data.get("notes") or "").strip()[:2000], "images": images,
+            # LoRA do personagem (Stable Diffusion local): arquivo/nome, peso e palavra de ativação
+            "lora": (data.get("lora") or "").strip()[:120], "lora_weight": lora_weight,
+            "trigger": (data.get("trigger") or "").strip()[:60],
             "created": existing.get("created") if existing else time.time(), "updated": time.time(),
         }
         items = [c for c in items if c["id"] != cid] + [entry]
@@ -196,6 +203,38 @@ def prompt_block(chars):
         if c.get("notes"):
             lines.append(f"  notes: {c['notes']}")
     return "\n".join(lines)
+
+
+def dataset_zip(cid):
+    """Pacote para treinar uma LoRA do personagem: as imagens da ficha + uma legenda .txt para cada uma
+    ('<palavra de ativação>, <aparência>'), no formato que os treinadores (kohya, Civitai, OneTrainer) aceitam.
+    Devolve o caminho do .zip."""
+    import zipfile
+    c = get(cid)
+    if not c:
+        raise CharacterError("Ficha não encontrada.")
+    if not c.get("images"):
+        raise CharacterError("A ficha não tem imagens. Adicione imagens do personagem antes.")
+    trigger = c.get("trigger") or _slug(c["name"])
+    caption = ", ".join(x for x in (trigger, c.get("look") or "") if x)
+    path = os.path.join(image_dir(), f"dataset_{cid}.zip")
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        for i, name in enumerate(c["images"], 1):
+            p = image_path(name)
+            if not p:
+                continue
+            ext = os.path.splitext(name)[1]
+            z.write(p, f"{trigger}/{trigger}_{i:02d}{ext}")
+            z.writestr(f"{trigger}/{trigger}_{i:02d}.txt", caption)
+        z.writestr("LEIA-ME.txt", (
+            f"Pacote para treinar uma LoRA de '{c['name']}' (palavra de ativação: {trigger}).\n\n"
+            "1. Junte de 15 a 30 imagens variadas do personagem (poses, ângulos, roupas); esta ficha tem "
+            f"{len(c['images'])}. Para cada imagem nova, crie um .txt com o mesmo nome e a legenda.\n"
+            "2. Treine num serviço online (ex.: treinador do Civitai) ou num programa como kohya_ss/OneTrainer, "
+            "com o mesmo modelo base que você usa no painel (SD 1.5 ou SDXL).\n"
+            "3. Coloque o .safetensors da LoRA na pasta de LoRAs do Stable Diffusion local e informe o nome e a "
+            "palavra de ativação na ficha do personagem.\n"))
+    return path
 
 
 def public(c):
