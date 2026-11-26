@@ -142,22 +142,84 @@ def status():
 
 # ---------------------------------------------------------------- servidor (sd-server)
 
-def _http(method, path, body=None, timeout=30):
+def _http(method, path, body=None, timeout=30, target=None):
+    """target: None = motor deste PC; ou {"url", "headers", "label"} de um servidor SD de outro PC."""
+    url = (target or {}).get("url") or base_url()
+    label = (target or {}).get("label") or "o motor local"
+    headers = {"Content-Type": "application/json", "User-Agent": router.USER_AGENT}
+    headers.update((target or {}).get("headers") or {})
     data = json.dumps(body).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(base_url() + path, data=data, method=method,
-                                 headers={"Content-Type": "application/json", "User-Agent": router.USER_AGENT})
+    req = urllib.request.Request(url + path, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             raw = r.read()
     except urllib.error.HTTPError as e:
         msg = e.read().decode("utf-8", "ignore")[:300]
-        raise SDError(f"O motor local respondeu {e.code}: {msg}")
+        if e.code in (401, 403):
+            raise SDError(f"{label} recusou o acesso ({e.code}): confira a chave/senha.")
+        raise SDError(f"{label} respondeu {e.code}: {msg}")
     except (urllib.error.URLError, OSError) as e:
-        raise SDError(f"Não consegui falar com o motor local ({base_url()}): {e}")
+        raise SDError(f"Não consegui falar com {label} ({url}): {e}")
     try:
         return json.loads(raw.decode("utf-8") or "null")
     except ValueError:
-        raise SDError("Resposta inválida do motor local.")
+        raise SDError(f"Resposta inválida de {label}.")
+
+
+# ---------------------------------------------------------------- servidores SD de outros PCs
+# Qualquer servidor com a API "WebUI" (/sdapi/v1): stable-diffusion.cpp (sd-server), AUTOMATIC1111, Forge, SD.Next.
+# Cadastrados como provedor personalizado do tipo "imagens" (provider_router.save_custom).
+
+def image_root(base):
+    """'http://pc:7860/v1' -> 'http://pc:7860' (a API WebUI fica na raiz do servidor)."""
+    return re.sub(r"/v\d+[a-z]*$", "", (base or "").rstrip("/"), flags=re.I)
+
+
+def remote_target(pid):
+    cfg = router.PROVIDERS.get(pid) or {}
+    key = router.provider_key(pid) if cfg.get("key_env") else ""
+    headers = {}
+    if key and key != "none":
+        if ":" in key:  # AUTOMATIC1111/Forge com --api-auth usuario:senha
+            headers["Authorization"] = "Basic " + base64.b64encode(key.encode("utf-8")).decode("ascii")
+        else:           # sd-server com --api-key
+            headers["Authorization"] = f"Bearer {key}"
+    return {"url": image_root(cfg.get("base")), "headers": headers, "label": cfg.get("label") or pid, "pid": pid}
+
+
+_styles = {}
+
+
+def server_style(target):
+    """'sdcpp' (LoRAs pela lista 'lora') ou 'a1111' (LoRAs como <lora:nome:peso> no prompt)."""
+    url = target["url"]
+    if url not in _styles:
+        try:
+            _http("GET", "/sdcpp/v1/capabilities", timeout=8, target=target)
+            _styles[url] = "sdcpp"
+        except SDError:
+            _styles[url] = "a1111"
+    return _styles[url]
+
+
+def remote_info(target):
+    """Modelos e LoRAs de um servidor SD (para os menus do painel e para o teste de conexão)."""
+    models = _http("GET", "/sdapi/v1/sd-models", timeout=12, target=target) or []
+    try:
+        loras = _http("GET", "/sdapi/v1/loras", timeout=12, target=target) or []
+    except SDError:
+        loras = []
+    try:
+        current = (_http("GET", "/sdapi/v1/options", timeout=8, target=target) or {}).get("sd_model_checkpoint") or ""
+    except SDError:
+        current = ""
+    names = [m.get("title") or m.get("model_name") or "" for m in models if isinstance(m, dict)]
+    lora_list = [{"file": l.get("path") or l.get("name"), "name": l.get("name") or _stem(l.get("path")),
+                  "lcm": (l.get("name") or _stem(l.get("path"))).lower().startswith("lcm-lora")}
+                 for l in loras if isinstance(l, dict)]
+    return {"models": [{"file": n, "family": family(n), "label": _stem(n) or n} for n in names if n],
+            "default_model": current or (names[0] if names else None), "loras": lora_list,
+            "style": server_style(target), "sizes": SIZES}
 
 
 def _server_up():
@@ -270,8 +332,13 @@ def _lora_entries(requested, fast, fam, available):
         if lcm and not any(e["path"] == lcm for e in out):
             out.append({"path": lcm, "multiplier": 1.0})
     if missing:
-        raise SDError("LoRA não encontrada na pasta do motor: " + ", ".join(missing))
+        raise SDError("LoRA não encontrada no servidor de imagens: " + ", ".join(missing))
     return out
+
+
+def _lora_tags(entries):
+    """AUTOMATIC1111/Forge: LoRAs vão no prompt como <lora:nome:peso>."""
+    return " ".join(f"<lora:{_stem(e['path'])}:{e['multiplier']:g}>" for e in entries)
 
 
 def _round64(v, lo=256, hi=1536):
@@ -279,18 +346,29 @@ def _round64(v, lo=256, hi=1536):
     return max(lo, min(hi, v - v % 64 or 64))
 
 
-def generate(opts):
+def generate(opts, target=None):
     """opts: prompt, negative, model, aspect | width/height, fast (LCM), loras [{name, weight}], reference (bytes),
-    strength, steps, seed. Devolve [(bytes, rótulo)]."""
+    strength, steps, seed. target: None = motor deste PC; remote_target(pid) = servidor SD de outro PC.
+    Devolve [(bytes, rótulo)]."""
     router.load_env()
     prompt = (opts.get("prompt") or "").strip()
     if not prompt:
         raise SDError("Prompt vazio.")
-    model = opts.get("model") or default_model()
-    if not external_url():
-        if not model or model not in list_models():
-            raise SDError("Nenhum modelo local encontrado. Rode bat\\Instalar_SD_Local_IA.bat.")
-    ensure_server(model)
+    style = "sdcpp"
+    if target:
+        style = server_style(target)
+        model = opts.get("model") or ""
+        if not model:
+            try:
+                model = (_http("GET", "/sdapi/v1/options", timeout=8, target=target) or {}).get("sd_model_checkpoint") or ""
+            except SDError:
+                model = ""
+    else:
+        model = opts.get("model") or default_model()
+        if not external_url():
+            if not model or model not in list_models():
+                raise SDError("Nenhum modelo local encontrado. Rode bat\\Instalar_SD_Local_IA.bat.")
+        ensure_server(model)
     fam = family(model)
     fast = opts.get("fast", True) is not False
     if opts.get("aspect") in SIZES[fam]:
@@ -298,24 +376,32 @@ def generate(opts):
     else:
         w, h = _round64(opts.get("width") or SIZES[fam]["1:1"][0]), _round64(opts.get("height") or SIZES[fam]["1:1"][1])
     try:
-        available = _http("GET", "/sdapi/v1/loras") or []
+        available = _http("GET", "/sdapi/v1/loras", target=target) or []
     except SDError:
         available = []
     loras = _lora_entries(opts.get("loras"), fast, fam, available)
     has_lcm = any(_stem(e["path"]).lower().startswith("lcm-lora") for e in loras)
     try:
-        samplers = [s.get("name") for s in (_http("GET", "/sdapi/v1/samplers") or []) if s.get("name")]
+        samplers = [s.get("name") for s in (_http("GET", "/sdapi/v1/samplers", target=target) or []) if s.get("name")]
     except SDError:
         samplers = []
     if has_lcm:
-        sampler, steps, cfg = _pick(samplers, "lcm") or "LCM", 6, 1.5
+        # LCM com CFG 1.0 = uma só passada por passo (medido numa NVIDIA T400: 31 s contra 53 s com CFG 1.5)
+        sampler, steps, cfg = _pick(samplers, "lcm") or "LCM", 6, 1.0
     else:
         sampler, steps, cfg = _pick(samplers, "euler_a", "euler_ancestral", "euler") or "Euler a", 22, 7.0
     if opts.get("steps"):
         steps = max(1, min(60, int(opts["steps"])))
     neg = (opts.get("negative") or "lowres, blurry, worst quality, watermark, text, signature, deformed").strip()
     body = {"prompt": prompt, "negative_prompt": neg, "width": w, "height": h, "steps": steps, "cfg_scale": cfg,
-            "seed": int(opts.get("seed", -1)), "batch_size": 1, "sampler_name": sampler, "lora": loras}
+            "seed": int(opts.get("seed", -1)), "batch_size": 1, "sampler_name": sampler}
+    if style == "sdcpp":
+        body["lora"] = [{"path": e["path"], "multiplier": e["multiplier"]} for e in loras]
+    else:  # AUTOMATIC1111 / Forge / SD.Next
+        if loras:
+            body["prompt"] = prompt + " " + _lora_tags(loras)
+        if opts.get("model"):
+            body["override_settings"] = {"sd_model_checkpoint": opts["model"]}
     path = "/sdapi/v1/txt2img"
     if opts.get("reference"):
         try:
@@ -325,13 +411,13 @@ def generate(opts):
         body.update({"init_images": [base64.b64encode(opts["reference"]).decode("ascii")],
                      "denoising_strength": strength})
         path = "/sdapi/v1/img2img"
-    data = _http("POST", path, body, timeout=GEN_TIMEOUT) or {}
+    data = _http("POST", path, body, timeout=GEN_TIMEOUT, target=target) or {}
     out = []
     for i, b64 in enumerate(data.get("images") or []):
         try:
-            out.append((base64.b64decode(b64.split(",", 1)[-1]), f"{_stem(model)}_{i + 1}"))
+            out.append((base64.b64decode(b64.split(",", 1)[-1]), f"{_stem(model) or 'sd'}_{i + 1}"))
         except Exception:
             continue
     if not out:
-        raise SDError("O motor local não devolveu imagem.")
+        raise SDError("O servidor de imagens não devolveu imagem.")
     return out

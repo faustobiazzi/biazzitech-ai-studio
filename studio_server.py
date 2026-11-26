@@ -341,7 +341,8 @@ class StudioHandler(BaseHTTPRequestHandler):
             if not self._guard("admin"):
                 return
             router.load_env()
-            self._send_json(200, {"providers": router.list_custom_providers(), "positions": router.CUSTOM_POSITIONS})
+            self._send_json(200, {"providers": router.list_custom_providers(), "positions": router.CUSTOM_POSITIONS,
+                                  "uses": router.CUSTOM_USES})
             return
 
         if parsed_path == "/api/characters":
@@ -366,6 +367,17 @@ class StudioHandler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(data)
+            return
+
+        if parsed_path == "/api/image/sd-info":
+            # modelos e LoRAs do SD deste PC ou de um servidor SD de outro PC (provedor personalizado de imagens)
+            if not self._guard("imagens"):
+                return
+            pid = (urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("id") or ["sdlocal"])[0]
+            try:
+                self._send_json(200, {"ok": True, **image_providers.sd_info(pid)})
+            except image_providers.ImageError as e:
+                self._send_json(502, {"ok": False, "message": str(e)})
             return
 
         if parsed_path == "/api/comic/layouts":
@@ -718,7 +730,7 @@ class StudioHandler(BaseHTTPRequestHandler):
                 key = (req.get("key") or "").strip()
                 if not key and pid and pid in router.PROVIDERS and not router.PROVIDERS[pid].get("no_key"):
                     key = router.provider_key(pid)
-                ok, msg, models = router.test_custom(req.get("base"), key)
+                ok, msg, models = router.test_custom(req.get("base"), key, req.get("uses") or "texto")
                 self._send_json(200 if ok else 400, {"ok": ok, "message": msg, "models": models,
                                                      "base": router.normalize_base_url(req.get("base"))})
             elif action == "save":
@@ -729,6 +741,22 @@ class StudioHandler(BaseHTTPRequestHandler):
                 self._send_json(200 if ok else 400, {"ok": ok, "message": msg})
             else:
                 self._send_json(400, {"ok": False, "message": "Ação inválida."})
+            return
+
+        if parsed_path == "/api/providers/edit":
+            # editar / remover / restaurar provedores padrão (nome, modelo fixo, ligado/desligado)
+            if not self._guard("admin", check_origin=True):
+                return
+            req = self._read_json(body)
+            pid, action = req.get("id"), req.get("action") or "edit"
+            router.load_env()
+            if action == "remove":
+                ok, msg = router.remove_provider(pid)
+            elif action == "restore":
+                ok, msg = router.restore_provider(pid) if pid in router.PROVIDERS else (False, "Provedor inválido.")
+            else:
+                ok, msg = router.edit_provider(pid, {k: req[k] for k in ("label", "model", "disabled") if k in req})
+            self._send_json(200 if ok else 400, {"ok": ok, "message": msg})
             return
 
         if parsed_path == "/api/providers/reset":
@@ -761,7 +789,7 @@ class StudioHandler(BaseHTTPRequestHandler):
         prompt = (payload.get("prompt") or "").strip()
         provider = payload.get("provider") or "pollinations"
 
-        if provider in image_providers.GENERATORS:
+        if image_providers.is_image_provider(provider):
             self._handle_pixel_image(provider, payload, prompt)
             return
 
@@ -893,8 +921,10 @@ class StudioHandler(BaseHTTPRequestHandler):
 
         stamp = int(time.time())
         out_dir = get_output_images_dir()
-        label_model = "SD local" if provider == "sdlocal" else f"{provider}/{mode or 'padrao'}"
-        mode = mode or ("local" if provider == "sdlocal" else "")
+        remote = provider not in image_providers.GENERATORS
+        label_model = ("SD local" if provider == "sdlocal" else
+                       (router.PROVIDERS.get(provider, {}).get("label", provider) if remote else f"{provider}/{mode or 'padrao'}"))
+        mode = mode or ("local" if provider == "sdlocal" else ("sd" if remote else ""))
         images = []
         for i, (data, ext, label) in enumerate(results):
             safe = re.sub(r"[^\w-]", "_", f"{provider}_{mode}_{label}")[:60]

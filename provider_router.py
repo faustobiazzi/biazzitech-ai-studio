@@ -267,6 +267,99 @@ def load_env():
         _FILE_KEYS.discard(k)
     _load_custom_providers()
     _register_instances()
+    _apply_overrides()
+
+
+# ---------------------------------------------------------------- ajustes do usuário nos provedores padrão
+# Nome exibido, modelo fixo, ligado/desligado e "removido" (chave apagada + cartão escondido, dá para restaurar).
+# Guardados em <pasta de dados>/providers_override.json.
+
+def _override_file():
+    return os.path.join(data_dir(), "providers_override.json")
+
+
+def list_overrides():
+    try:
+        with open(_override_file(), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_overrides(data):
+    path = _override_file()
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)
+
+
+def _apply_overrides():
+    ov = list_overrides()
+    for pid, cfg in PROVIDERS.items():
+        if cfg.get("custom"):
+            continue
+        cfg.setdefault("orig_label", cfg["label"])
+        o = ov.get(pid) or {}
+        cfg["label"] = (o.get("label") or "").strip() or cfg["orig_label"]
+        cfg["user_model"] = (o.get("model") or "").strip()
+        cfg["user_disabled"] = bool(o.get("disabled") or o.get("hidden"))
+        cfg["user_hidden"] = bool(o.get("hidden"))
+
+
+def edit_provider(pid, data):
+    """Ajusta um provedor padrão (ou uma chave extra): nome exibido, modelo fixo, ligado/desligado."""
+    if pid not in PROVIDERS or PROVIDERS[pid].get("custom"):
+        return False, "Provedor inválido (os personalizados se editam no formulário deles)."
+    ov = list_overrides()
+    o = ov.get(pid) or {}
+    if "label" in data:
+        label = (data.get("label") or "").strip()[:40]
+        o["label"] = "" if label == PROVIDERS[pid].get("orig_label") else label
+    if "model" in data:
+        o["model"] = (data.get("model") or "").strip()[:120]
+    if "disabled" in data:
+        o["disabled"] = bool(data.get("disabled"))
+    ov[pid] = {k: v for k, v in o.items() if v}
+    if not ov[pid]:
+        ov.pop(pid)
+    _save_overrides(ov)
+    _apply_overrides()
+    return True, "Provedor atualizado."
+
+
+def remove_provider(pid):
+    """'Remover' um provedor padrão: apaga a chave (se houver) e esconde o cartão. Dá para restaurar."""
+    if pid not in PROVIDERS or PROVIDERS[pid].get("custom"):
+        return False, "Provedor inválido."
+    cfg = PROVIDERS[pid]
+    if cfg.get("instance_of"):  # chave extra ("Groq #2"): some junto com a chave
+        _write_env_key(cfg["key_env"], "")
+        PROVIDERS.pop(pid, None)
+        load_env()
+        return True, "Chave extra removida."
+    if not cfg.get("local") and provider_key(pid):
+        _write_env_key(cfg["key_env"], "")
+    ov = list_overrides()
+    ov.setdefault(pid, {})["hidden"] = True
+    _save_overrides(ov)
+    load_env()
+    return True, f"{cfg['label']} removido do painel e do rodízio (dá para restaurar em 'Mostrar removidos')."
+
+
+def restore_provider(pid):
+    ov = list_overrides()
+    o = ov.get(pid) or {}
+    o.pop("hidden", None)
+    o.pop("disabled", None)
+    if o:
+        ov[pid] = o
+    else:
+        ov.pop(pid, None)
+    _save_overrides(ov)
+    _apply_overrides()
+    return True, "Provedor restaurado" + ("" if provider_key(pid) else " (cadastre a chave de novo para usar)") + "."
 
 
 # ---------------------------------------------------------------- provedores personalizados
@@ -340,20 +433,38 @@ def _load_custom_providers():
             "position": c.get("position") or "antes_locais",
             "timeout": int(c.get("timeout") or 300),
             "free": not c.get("paid"),
+            "uses": _uses(c.get("uses")),
         }
+        if PROVIDERS[pid]["uses"] == ["imagens"]:
+            PROVIDERS[pid]["kind"] = "image"
     for pid in [p for p, cfg in PROVIDERS.items() if cfg.get("custom") and p not in ids]:
         PROVIDERS.pop(pid, None)
 
 
-def custom_ids():
-    return [p for p, cfg in PROVIDERS.items() if cfg.get("custom")]
+CUSTOM_USES = {
+    "texto": "Texto (chat, código, auxiliar) — servidor compatível com a OpenAI",
+    "imagens": "Imagens (Stable Diffusion com LoRAs: stable-diffusion.cpp, AUTOMATIC1111, Forge, SD.Next)",
+    "ambos": "Os dois (servidor que faz texto e imagens)",
+}
 
 
-def test_custom(base, key=""):
-    """Testa a conexão e lista os modelos do servidor. Retorna (ok, mensagem, modelos)."""
-    base = normalize_base_url(base)
-    if not base:
-        return False, "Informe a URL do servidor.", []
+def _uses(value):
+    """['texto'], ['imagens'] ou ['texto', 'imagens'] (cadastros antigos = só texto)."""
+    if value in ("imagens",):
+        return ["imagens"]
+    if value in ("ambos",) or (isinstance(value, list) and set(value) >= {"texto", "imagens"}):
+        return ["texto", "imagens"]
+    if isinstance(value, list) and value == ["imagens"]:
+        return ["imagens"]
+    return ["texto"]
+
+
+def custom_ids(kind="texto"):
+    """Personalizados que servem para 'texto' (entram no rodízio de chat) ou 'imagens' (lista de geradores)."""
+    return [p for p, cfg in PROVIDERS.items() if cfg.get("custom") and kind in cfg.get("uses", ["texto"])]
+
+
+def _test_text(base, key):
     headers = {"User-Agent": USER_AGENT}
     if key:
         headers["Authorization"] = f"Bearer {key}"
@@ -366,7 +477,39 @@ def test_custom(base, key=""):
     except Exception as e:
         return False, f"Não consegui conectar em {base}: {e}", []
     models = sorted({(m.get("id") or "").replace("models/", "") for m in data.get("data", []) if m.get("id")})
-    return True, f"Conectado: {len(models)} modelo(s) encontrado(s).", models
+    return True, f"Texto: {len(models)} modelo(s).", models
+
+
+def _test_images(base, key):
+    import sd_local
+    headers = {}
+    if key:
+        headers["Authorization"] = ("Basic " + base64.b64encode(key.encode("utf-8")).decode("ascii")) if ":" in key \
+            else f"Bearer {key}"
+    target = {"url": sd_local.image_root(base), "headers": headers, "label": "O servidor de imagens"}
+    try:
+        info = sd_local.remote_info(target)
+    except sd_local.SDError as e:
+        return False, f"{e} (a API de imagens precisa estar ligada: sd-server, ou --api no AUTOMATIC1111/Forge).", []
+    tipo = "stable-diffusion.cpp" if info["style"] == "sdcpp" else "WebUI (AUTOMATIC1111/Forge)"
+    return True, (f"Imagens: {tipo}, {len(info['models'])} modelo(s) e {len(info['loras'])} LoRA(s)."), \
+        [m["file"] for m in info["models"]]
+
+
+def test_custom(base, key="", uses="texto"):
+    """Testa a conexão (texto e/ou imagens) e lista os modelos. Retorna (ok, mensagem, modelos)."""
+    base = normalize_base_url(base)
+    if not base:
+        return False, "Informe a URL do servidor.", []
+    kinds = _uses(uses)
+    msgs, models = [], []
+    for k in kinds:
+        ok, msg, found = (_test_text if k == "texto" else _test_images)(base, key)
+        if not ok:
+            return False, msg, []
+        msgs.append(msg)
+        models += [m for m in found if m not in models]
+    return True, "Conectado. " + " ".join(msgs), models
 
 
 def save_custom(data):
@@ -384,7 +527,8 @@ def save_custom(data):
         while any(c["id"] == pid for c in items):
             pid, n = f"{base_pid}_{n}", n + 1
     if not data.get("skip_test"):
-        ok, msg, _ = test_custom(base, key or (provider_key(pid) if existing and existing.get("has_key") else ""))
+        ok, msg, _ = test_custom(base, key or (provider_key(pid) if existing and existing.get("has_key") else ""),
+                                 data.get("uses") or "texto")
         if not ok:
             return False, msg + " (marque 'salvar mesmo assim' se o servidor estiver desligado agora)", None
     position = data.get("position") if data.get("position") in CUSTOM_POSITIONS else "antes_locais"
@@ -392,6 +536,7 @@ def save_custom(data):
         "id": pid, "label": label[:40], "base": base, "model": (data.get("model") or "").strip(),
         "vision": bool(data.get("vision")), "paid": bool(data.get("paid")), "position": position,
         "timeout": int(data.get("timeout") or 300),
+        "uses": {("texto",): "texto", ("imagens",): "imagens"}.get(tuple(_uses(data.get("uses"))), "ambos"),
         "has_key": bool(key) or bool(existing and existing.get("has_key") and not data.get("remove_key")),
     }
     if key:
@@ -423,7 +568,10 @@ def base_id(pid):
 def _new_instance(base, n):
     cfg = PROVIDERS[base]
     inst = dict(cfg)
-    inst.update({"key_env": f"{cfg['key_env']}_{n}", "label": f"{cfg['label']} #{n}", "instance_of": base})
+    for k in ("orig_label", "user_model", "user_disabled", "user_hidden"):  # ajustes do provedor base não passam
+        inst.pop(k, None)
+    inst.update({"key_env": f"{cfg['key_env']}_{n}", "label": f"{cfg.get('orig_label') or cfg['label']} #{n}",
+                 "instance_of": base})
     PROVIDERS[f"{base}#{n}"] = inst
 
 
@@ -784,7 +932,7 @@ def resolve_models(pid, requested):
         reason = os.environ.get(f"{base.upper()}_REASON_MODEL", "").strip() or cfg.get("reason_model")
         if reason:
             return [reason]
-    override = os.environ.get(f"{base.upper()}_MODEL", "").strip()
+    override = os.environ.get(f"{base.upper()}_MODEL", "").strip() or cfg.get("user_model") or ""
     if override:
         return [override]
     if base == "pollinations":
@@ -989,6 +1137,10 @@ def _record_model_issue(pid, model, code, message, seconds):
 
 
 def unavailable_reason(pid, ps=None):
+    if PROVIDERS[pid].get("user_hidden"):
+        return "removido por você"
+    if PROVIDERS[pid].get("user_disabled"):
+        return "desligado por você"
     if pid == "sdlocal":  # o painel liga o motor sozinho na hora de gerar
         import sd_local
         if not provider_key(pid):
@@ -1338,7 +1490,9 @@ def status(refresh=False):
     image_ids = []
     for b in IMAGE_PROVIDERS:
         image_ids += instances_of(b)
-    for pid in provider_order() + image_ids:
+    text_ids = provider_order()
+    image_ids += [c for c in custom_ids("imagens") if c not in text_ids]  # personalizados só de imagens
+    for pid in text_ids + image_ids:
         cfg = PROVIDERS[pid]
         if cfg.get("instance_of") and not provider_key(pid):
             continue  # instância extra sem chave: não mostra
@@ -1362,6 +1516,11 @@ def status(refresh=False):
             "base_url": cfg.get("base") if cfg.get("custom") else None,
             "vision": bool(cfg.get("vision")),
             "position": cfg.get("position"),
+            "uses": cfg.get("uses") if cfg.get("custom") else None,
+            "hidden": bool(cfg.get("user_hidden")),
+            "disabled": bool(cfg.get("user_disabled")) and not cfg.get("user_hidden"),
+            "orig_label": cfg.get("orig_label"),
+            "user_model": cfg.get("user_model") or "",
             "custom_model": cfg.get("default_model") if cfg.get("custom") else None,
             "has_key": (not cfg.get("no_key")) if cfg.get("custom") else None,
             "available": reason is None,

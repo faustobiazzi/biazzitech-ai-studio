@@ -129,6 +129,100 @@ class SDLocalTest(unittest.TestCase):
             sd_local.ensure_server("sd15.gguf")
 
 
+class FakeA1111(FakeSD):
+    """AUTOMATIC1111/Forge: sem /sdcpp/v1/capabilities, LoRA vai como <lora:...> no prompt, pede senha."""
+    def do_GET(self):
+        if self.headers.get("Authorization") != "Basic " + base64.b64encode(b"ana:segredo").decode():
+            self.send_error(401)
+            return
+        if self.path == "/sdapi/v1/sd-models":
+            return self._json([{"title": "dreamshaper_8.safetensors [abc]", "model_name": "dreamshaper_8"}])
+        if self.path == "/sdapi/v1/options":
+            return self._json({"sd_model_checkpoint": "dreamshaper_8.safetensors [abc]"})
+        if self.path == "/sdapi/v1/loras":
+            return self._json([{"name": "pixel-art", "path": "C:/sd/models/Lora/pixel-art.safetensors"}])
+        if self.path == "/sdapi/v1/samplers":
+            return self._json([{"name": "Euler a"}, {"name": "LCM"}])
+        self.send_error(404)
+
+
+class FakeSdcpp(FakeSD):
+    def do_GET(self):
+        if self.path == "/sdcpp/v1/capabilities":
+            return self._json({"features": ["lora"]})
+        if self.path == "/sdapi/v1/sd-models":
+            return self._json([{"title": "sd15", "model_name": "sd15"}])
+        return super().do_GET()
+
+
+class RemoteImageServerTest(unittest.TestCase):
+    """Stable Diffusion de outro PC cadastrado como provedor personalizado do tipo 'imagens'."""
+    @classmethod
+    def setUpClass(cls):
+        cls.servers = []
+        for handler in (FakeA1111, FakeSdcpp):
+            s = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            threading.Thread(target=s.serve_forever, daemon=True).start()
+            cls.servers.append(s)
+        cls.a1111 = f"http://127.0.0.1:{cls.servers[0].server_port}"
+        cls.sdcpp = f"http://127.0.0.1:{cls.servers[1].server_port}"
+
+    @classmethod
+    def tearDownClass(cls):
+        for s in cls.servers:
+            s.shutdown()
+            s.server_close()
+
+    def setUp(self):
+        clear_data()
+        FakeSD.requests.clear()
+        write_env()
+        router.load_env()
+        sd_local._styles.clear()
+
+    def test_a1111_with_password_and_prompt_loras(self):
+        ok, msg, models = router.test_custom(self.a1111, "ana:segredo", "imagens")
+        self.assertTrue(ok, msg)
+        self.assertIn("WebUI", msg)
+        self.assertEqual(models, ["dreamshaper_8.safetensors [abc]"])
+        self.assertFalse(router.test_custom(self.a1111, "ana:errada", "imagens")[0])
+        ok, msg, pid = router.save_custom({"label": "SD do Fulano", "base": self.a1111, "key": "ana:segredo",
+                                           "uses": "imagens"})
+        self.assertTrue(ok, msg)
+        # aparece na lista de imagens, não no rodízio de texto
+        self.assertIn(pid, router.custom_ids("imagens"))
+        self.assertNotIn(pid, router.custom_ids("texto"))
+        self.assertNotIn(pid, router.provider_order())
+        self.assertIn(pid, [p["id"] for p in router.status()["providers"]])
+        info = image_providers.sd_info(pid)
+        self.assertEqual(info["style"], "a1111")
+        self.assertEqual(info["loras"][0]["name"], "pixel-art")
+        image_providers.generate(pid, {"prompt": "knight", "loras": [{"name": "pixel-art", "weight": 0.7}],
+                                       "fast": False, "model": "dreamshaper_8.safetensors [abc]"})
+        path, body = FakeSD.requests[-1]
+        self.assertEqual(path, "/sdapi/v1/txt2img")
+        self.assertIn("<lora:pixel-art:0.7>", body["prompt"])
+        self.assertNotIn("lora", body)
+        self.assertEqual(body["override_settings"]["sd_model_checkpoint"], "dreamshaper_8.safetensors [abc]")
+
+    def test_sdcpp_server_and_both_uses(self):
+        ok, msg, pid = router.save_custom({"label": "PC da sala", "base": self.sdcpp + "/v1", "uses": "ambos",
+                                           "skip_test": True})
+        self.assertTrue(ok, msg)
+        self.assertIn(pid, router.custom_ids("imagens"))
+        self.assertIn(pid, router.custom_ids("texto"))
+        self.assertEqual(sd_local.remote_target(pid)["url"], self.sdcpp)
+        image_providers.generate(pid, {"prompt": "castle", "loras": [{"name": "pixel-art"}]})
+        body = FakeSD.requests[-1][1]
+        self.assertIn({"path": "estilos/pixel-art.safetensors", "multiplier": 0.8}, body["lora"])
+        self.assertEqual(body["cfg_scale"], 1.0)  # LCM com uma passada só
+
+    def test_old_custom_providers_stay_text_only(self):
+        ok, _, pid = router.save_custom({"label": "Antigo", "base": "localhost:59990", "skip_test": True})
+        self.assertEqual(router.PROVIDERS[pid]["uses"], ["texto"])
+        self.assertFalse(image_providers.is_image_provider(pid))
+
+
 class CharacterLoraTest(unittest.TestCase):
     def setUp(self):
         clear_data()

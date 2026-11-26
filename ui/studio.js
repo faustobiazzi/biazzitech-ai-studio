@@ -712,7 +712,7 @@ async function loadImgOptions() {
 
 async function onImgProviderChange() {
   const prov = document.getElementById('img-provider').value;
-  const sd = prov === 'sdlocal';
+  const sd = prov === 'sdlocal' || isRemoteSd(prov);
   const pix = prov !== 'pollinations' && !sd;
   document.getElementById('pix-controls').style.display = pix ? '' : 'none';
   document.getElementById('poll-controls').style.display = prov === 'pollinations' ? '' : 'none';
@@ -720,7 +720,7 @@ async function onImgProviderChange() {
   document.getElementById('pix-model-id').style.display = prov === 'scenario' ? '' : 'none';
   document.getElementById('img-input').placeholder = PIX_HINTS[prov] || '';
   if (!sd) document.getElementById('lora-panel').style.display = 'none';
-  if (sd) { await loadSdLocal(); return; }
+  if (sd) { await loadSdLocal(true); return; }
   if (!pix) return;
   const opts = (await loadImgOptions())[prov] || [];
   const sel = document.getElementById('pix-mode');
@@ -742,9 +742,31 @@ async function onImgProviderChange() {
 let sdStatus = null;
 const sdLoraSel = {};   // nome da LoRA -> peso
 
+function isRemoteSd(prov) {
+  const o = document.querySelector('#img-provider option[value="' + prov + '"]');
+  return !!(o && o.dataset.custom);
+}
+
 async function loadSdLocal(force) {
+  const prov = document.getElementById('img-provider').value;
+  const remote = isRemoteSd(prov);
   if (force || !sdStatus) {
-    try { sdStatus = (await (await fetch('/api/image/options')).json()).sdlocal_status || {}; } catch (e) { sdStatus = {}; }
+    setStatus(remote ? 'Consultando os modelos e LoRAs do servidor...' : 'Carregando o Stable Diffusion local...');
+    try {
+      const r = await fetch('/api/image/sd-info?id=' + encodeURIComponent(remote ? prov : 'sdlocal'));
+      sdStatus = await r.json();
+      if (!r.ok) { setStatus('Servidor de imagens: ' + (sdStatus.message || 'não respondeu')); sdStatus = { models: [], loras: [] }; return; }
+    } catch (e) { sdStatus = {}; }
+  }
+  if (remote) {
+    const sel0 = document.getElementById('sd-model');
+    sel0.innerHTML = '';
+    (sdStatus.models || []).forEach(m => { const o = el('option', null, m.label); o.value = m.file; sel0.appendChild(o); });
+    sel0.value = sdStatus.default_model || '';
+    updateLoraButton();
+    setStatus((sdStatus.label || 'Servidor') + ': ' + (sdStatus.models || []).length + ' modelo(s), ' +
+              (sdStatus.loras || []).length + ' LoRA(s) disponíveis.');
+    return;
   }
   const sel = document.getElementById('sd-model');
   const cur = sel.value;
@@ -802,7 +824,7 @@ function toggleLoraPanel() {
 
 // No SD local, soma as LoRAs e as palavras de ativação das fichas em cena ao pedido
 function withCharacterLoras(req) {
-  if (req.provider !== 'sdlocal') return req;
+  if (req.provider !== 'sdlocal' && !isRemoteSd(req.provider)) return req;
   const ex = characterLoraExtras();
   const names = new Set((req.loras || []).map(l => l.name));
   req.loras = (req.loras || []).concat(ex.loras.filter(l => !names.has(l.name)));
@@ -838,7 +860,7 @@ function currentImageRequest(prompt, aspectOverride) {
   if (provider === 'pollinations') {
     req.model = document.getElementById('img-model').value;
     req.aspect = aspectOverride || document.getElementById('img-aspect').value;
-  } else if (provider === 'sdlocal') {
+  } else if (provider === 'sdlocal' || isRemoteSd(provider)) {
     req.model = document.getElementById('sd-model').value;
     req.aspect = aspectOverride || document.getElementById('sd-aspect').value;
     req.fast = document.getElementById('sd-fast').checked;
@@ -875,8 +897,8 @@ async function generateImage(opts) {
   btn.disabled = true;
   setStatus(provider === 'pollinations'
     ? 'Gerando imagem privada (' + req.model + ', ' + req.aspect + ')...'
-    : provider === 'sdlocal'
-      ? 'Gerando no seu PC (' + req.model + (req.loras.length ? ', ' + req.loras.length + ' LoRA(s)' : '') + ')... a 1ª imagem liga o motor e demora mais.'
+    : (provider === 'sdlocal' || isRemoteSd(provider))
+      ? (isRemoteSd(provider) ? 'Gerando no servidor de imagens' : 'Gerando no seu PC') + ' (' + req.model + (req.loras.length ? ', ' + req.loras.length + ' LoRA(s)' : '') + ')... a 1ª imagem liga o motor e demora mais.'
       : 'Gerando com ' + provider + ' (' + req.mode + ')... pode levar alguns minutos.');
 
   try {
@@ -926,21 +948,105 @@ function row(label, value) {
   return d;
 }
 
+let showHiddenProviders = false;
+
+function toggleHiddenProviders() {
+  showHiddenProviders = !showHiddenProviders;
+  renderProviders(lastProvidersData);
+}
+
+async function providerEdit(body) {
+  const r = await fetch('/api/providers/edit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || d.ok === false) throw new Error(d.message || ('HTTP ' + r.status));
+  return d;
+}
+
+// Editar um provedor padrão (ou uma chave extra): nome exibido, modelo fixo, ligado/desligado, remover
+function providerEditForm(p, card) {
+  if (card.querySelector('.prov-edit')) return;
+  const box = el('div', 'key-box prov-edit');
+  const mk = (label, input) => { const l = el('div', 'key-line'); const t = el('label', null, label); t.style.minWidth = '95px'; l.appendChild(t); l.appendChild(input); box.appendChild(l); return input; };
+  const name = mk('Nome exibido', el('input')); name.value = p.label; name.placeholder = p.orig_label || p.label;
+  let model = null;
+  if (!p.local && p.kind !== 'image') {
+    model = mk('Modelo fixo', el('input')); model.value = p.user_model || '';
+    model.placeholder = 'vazio = automático (ex.: ' + (p.last_model || 'nome-do-modelo') + ')';
+  }
+  const lab = el('label'); const on = el('input'); on.type = 'checkbox'; on.checked = !p.disabled;
+  lab.appendChild(on); lab.appendChild(document.createTextNode(' ligado (participa do rodízio / da lista)'));
+  box.appendChild(lab);
+  const msg = el('div', 'key-msg');
+  const line = el('div', 'key-line');
+  const save = el('button', 'mini-btn key-save', 'Salvar');
+  save.onclick = async () => {
+    try {
+      const body = { id: p.id, label: name.value, disabled: !on.checked };
+      if (model) body.model = model.value;
+      await providerEdit(body);
+      loadProviders(true);
+    } catch (e) { msg.className = 'key-msg err'; msg.textContent = e.message; }
+  };
+  const rm = el('button', 'mini-btn danger', p.instance ? 'Remover esta chave' : 'Remover');
+  rm.onclick = async () => {
+    const txt = p.instance
+      ? 'Remover a chave extra "' + p.label + '"? Ela é apagada do ~/.env.'
+      : 'Remover "' + p.label + '" do painel e do rodízio?\n\n' + (p.local ? '' : 'A chave dele é apagada do ~/.env. ') +
+        'Dá para trazer de volta em "Mostrar removidos" (aí é só cadastrar a chave de novo).';
+    if (!confirm(txt)) return;
+    try { const d = await providerEdit({ id: p.id, action: 'remove' }); setStatus(d.message); loadProviders(true); }
+    catch (e) { msg.className = 'key-msg err'; msg.textContent = e.message; }
+  };
+  const cancel = el('button', 'mini-btn', 'Cancelar'); cancel.onclick = () => box.remove();
+  line.appendChild(save); line.appendChild(rm); line.appendChild(cancel);
+  box.appendChild(line); box.appendChild(msg);
+  card.insertBefore(box, card.children[1] || null);
+}
+
 function renderProviders(data) {
   const list = document.getElementById('providers-list');
   list.innerHTML = '';
-  (data.providers || []).forEach((p, idx) => {
-    const cls = !p.configured ? 'off' : (p.available ? 'ok' : 'wait');
+  const hiddenCount = (data.providers || []).filter(p => p.hidden).length;
+  const hb = document.getElementById('btn-show-hidden');
+  if (hb) {
+    hb.style.display = hiddenCount && canAdmin() ? '' : 'none';
+    hb.textContent = showHiddenProviders ? 'Esconder removidos' : 'Mostrar removidos (' + hiddenCount + ')';
+  }
+  let n = 0;
+  (data.providers || []).forEach((p) => {
+    if (p.hidden && !showHiddenProviders) return;
+    const idx = p.kind === 'image' || p.hidden ? -1 : n++;
+    const cls = p.hidden ? 'off' : (!p.configured || p.disabled ? 'off' : (p.available ? 'ok' : 'wait'));
     const card = el('div', 'prov-card ' + cls);
     const head = el('div', 'prov-head');
-    const title = el('strong', null, (p.kind === 'image' ? '' : (idx + 1) + '. ') + p.label);
+    const title = el('strong', null, (idx < 0 ? '' : (idx + 1) + '. ') + p.label);
     if (p.kind === 'image') title.appendChild(el('span', 'kind-badge', 'imagem'));
+    if (!p.custom && canAdmin() && !p.hidden) {
+      const eb = el('button', 'mini-btn', '✎');
+      eb.title = 'Editar: nome, modelo fixo, ligar/desligar, remover';
+      eb.style.marginLeft = '6px';
+      eb.onclick = () => providerEditForm(p, card);
+      title.appendChild(eb);
+    }
     head.appendChild(title);
     let state = 'ATIVO';
-    if (!p.configured) state = p.id === 'ollama' ? 'DESATIVADO' : 'SEM CHAVE';
+    if (p.hidden) state = 'REMOVIDO';
+    else if (p.disabled) state = 'DESLIGADO';
+    else if (!p.configured) state = p.local ? 'DESATIVADO' : 'SEM CHAVE';
     else if (!p.available) state = 'EM ESPERA' + (p.cooldown_seconds ? ' · volta em ' + fmtWait(p.cooldown_seconds) : '');
     head.appendChild(el('span', 'prov-state', state));
     card.appendChild(head);
+
+    if (p.hidden) {
+      card.appendChild(el('div', 'prov-row', 'Removido por você: fora do painel e do rodízio.'));
+      const rb = el('button', 'mini-btn key-save', 'Restaurar');
+      rb.onclick = async () => { try { const d = await providerEdit({ id: p.id, action: 'restore' }); setStatus(d.message); loadProviders(true); } catch (e) { alert(e.message); } };
+      card.appendChild(rb);
+      list.appendChild(card);
+      return;
+    }
+    if (p.disabled) card.appendChild(el('div', 'prov-row', '⏸ Desligado por você: não participa do rodízio. Use ✎ para ligar de novo.'));
+    if (p.user_model) card.appendChild(row('Modelo fixo', p.user_model));
 
     if (!p.configured) {
       if (p.id === 'sdlocal') {
@@ -956,7 +1062,8 @@ function renderProviders(data) {
       }
     } else {
       if (p.custom) {
-        card.appendChild(row('Servidor', p.base_url || ''));
+        card.appendChild(row('Usado para', (p.uses || ['texto']).map(u => u === 'imagens' ? 'imagens (Stable Diffusion)' : 'texto').join(' e ')));
+      card.appendChild(row('Servidor', p.base_url || ''));
         card.appendChild(row('Modelo', p.custom_model || 'automático (o servidor escolhe/lista)'));
         card.appendChild(row('Chave', p.has_key ? (p.key_mask || '••••') : 'nenhuma'));
         card.appendChild(row('Posição', (lastProvidersData.custom_positions || {})[p.position] || p.position || ''));
@@ -1111,6 +1218,7 @@ function isEditingKey() {
 
 let lastProvidersData = {};
 let customPositions = null;
+let customUses = null;
 
 async function customPost(body) {
   const r = await fetch('/api/custom-providers', { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1122,7 +1230,21 @@ async function customPost(body) {
 
 // Coloca os provedores personalizados nos menus de modelo (chat e auxiliar)
 function refreshModelMenus() {
-  const customs = (lastProvidersData.providers || []).filter(p => p.custom);
+  const all = (lastProvidersData.providers || []).filter(p => p.custom);
+  const customs = all.filter(p => (p.uses || ['texto']).includes('texto'));
+  const imgSel = document.getElementById('img-provider');
+  if (imgSel) {
+    const cur = imgSel.value;
+    [...imgSel.querySelectorAll('option[data-custom]')].forEach(o => o.remove());
+    all.filter(p => (p.uses || []).includes('imagens')).forEach(p => {
+      const o = el('option', null, '★ ' + p.label + ' (Stable Diffusion de outro PC)');
+      o.value = p.id; o.dataset.custom = '1'; imgSel.appendChild(o);
+    });
+    // geradores padrão removidos/desligados por você somem da lista
+    const off = new Set((lastProvidersData.providers || []).filter(p => p.hidden || p.disabled).map(p => p.id));
+    [...imgSel.options].forEach(o => { if (!o.dataset.custom && o.value !== 'pollinations') o.hidden = off.has(o.value); });
+    if ([...imgSel.options].some(o => o.value === cur)) imgSel.value = cur;
+  }
   [['chat-model', ''], ['assist-model', 'vision-or-text']].forEach(([id]) => {
     const sel = document.getElementById(id);
     if (!sel) return;
@@ -1144,13 +1266,18 @@ async function openCustomForm(editId) {
   try {
     const d = await (await fetch('/api/custom-providers')).json();
     positions = customPositions = d.positions || {};
+    customUses = d.uses || null;
     existing = (d.providers || []).find(c => c.id === editId) || null;
   } catch (e) {}
   const f = el('div', 'acc-section custom-form');
   f.appendChild(el('h3', null, existing ? 'Editar provedor personalizado' : 'Novo provedor personalizado'));
-  f.appendChild(el('div', 'prov-row', 'Qualquer servidor compatível com a API da OpenAI: Ollama de outro PC (http://IP:11434/v1), LM Studio (http://localhost:1234/v1), vLLM/SGLang na nuvem, um modelo aberto hospedado (inclusive um Grok aberto)...'));
+  f.appendChild(el('div', 'prov-row', 'Texto: qualquer servidor compatível com a API da OpenAI — Ollama de outro PC (http://IP:11434/v1), LM Studio (http://localhost:1234/v1), vLLM/SGLang, um modelo aberto hospedado. Imagens: um Stable Diffusion de outro PC com a API WebUI ligada — stable-diffusion.cpp (http://IP:1234), AUTOMATIC1111/Forge com --api (http://IP:7860); os modelos e LoRAs dele aparecem na aba Imagens.'));
   const mk = (label, input) => { const l = el('div', 'key-line'); const t = el('label', null, label); t.style.minWidth = '120px'; l.appendChild(t); l.appendChild(input); f.appendChild(l); return input; };
-  const name = mk('Nome', el('input')); name.placeholder = 'ex.: Ollama do PC da sala'; name.value = existing ? existing.label : '';
+  const uses = el('select');
+  Object.entries(customUses || { texto: 'Texto', imagens: 'Imagens', ambos: 'Os dois' }).forEach(([k, v]) => { const o = el('option', null, v); o.value = k; uses.appendChild(o); });
+  uses.value = existing ? (existing.uses || 'texto') : 'texto';
+  mk('Usar para', uses);
+  const name = mk('Nome', el('input')); name.placeholder = 'ex.: Ollama do PC da sala / SD do Fulano'; name.value = existing ? existing.label : '';
   const base = mk('URL do servidor', el('input')); base.placeholder = 'ex.: http://192.168.0.20:11434/v1'; base.value = existing ? existing.base : '';
   const key = mk('Chave (opcional)', el('input')); key.type = 'password'; key.autocomplete = 'off';
   key.placeholder = existing && existing.has_key ? '(manter a atual)' : 'deixe vazio se o servidor não pede chave';
@@ -1162,20 +1289,30 @@ async function openCustomForm(editId) {
   Object.entries(positions || {}).forEach(([k, v]) => { const o = el('option', null, v); o.value = k; pos.appendChild(o); });
   pos.value = existing ? existing.position : 'antes_locais';
   mk('Posição no rodízio', pos);
+  const syncUses = () => {
+    const txt = uses.value !== 'imagens';
+    pos.parentNode.style.display = txt ? '' : 'none';
+    base.placeholder = txt ? 'ex.: http://192.168.0.20:11434/v1' : 'ex.: http://192.168.0.20:7860';
+    key.placeholder = existing && existing.has_key ? '(manter a atual)'
+      : (txt ? 'deixe vazio se o servidor não pede chave' : 'vazio, a --api-key do sd-server ou usuario:senha do --api-auth');
+  };
+  uses.onchange = () => { syncUses(); visionLabel.style.display = uses.value === 'imagens' ? 'none' : ''; };
   const checks = el('div', 'key-line');
   const cb = (txt, val) => { const l = el('label'); const c = el('input'); c.type = 'checkbox'; c.checked = !!val; l.appendChild(c); l.appendChild(document.createTextNode(' ' + txt)); checks.appendChild(l); return c; };
   const vision = cb('enxerga imagens (pode ser usado pelo auxiliar com referências)', existing && existing.vision);
+  const visionLabel = vision.parentNode;
   const paid = cb('é pago', existing && existing.paid);
   const skip = cb('salvar mesmo se não conectar agora', false);
   const rmKey = existing && existing.has_key ? cb('remover a chave', false) : null;
   f.appendChild(checks);
+  syncUses(); visionLabel.style.display = uses.value === 'imagens' ? 'none' : '';
   const msg = el('div', 'key-msg');
   const btns = el('div', 'key-line');
   const test = el('button', 'mini-btn', 'Testar conexão e listar modelos');
   test.onclick = async () => {
     msg.className = 'key-msg'; msg.textContent = 'Testando...';
     try {
-      const d = await customPost({ action: 'test', base: base.value, key: key.value, id: existing && existing.id });
+      const d = await customPost({ action: 'test', base: base.value, key: key.value, id: existing && existing.id, uses: uses.value });
       base.value = d.base;
       const cur = modelSel.value;
       [...modelSel.options].slice(1).forEach(o => o.remove());
@@ -1190,7 +1327,7 @@ async function openCustomForm(editId) {
     try {
       const d = await customPost({ action: 'save', id: existing && existing.id, label: name.value, base: base.value,
         key: key.value, model: modelSel.value, position: pos.value, vision: vision.checked, paid: paid.checked,
-        skip_test: skip.checked, remove_key: rmKey ? rmKey.checked : false });
+        skip_test: skip.checked, remove_key: rmKey ? rmKey.checked : false, uses: uses.value });
       msg.className = 'key-msg ok'; msg.textContent = d.message;
       setTimeout(() => { slot.innerHTML = ''; loadProviders(true); }, 800);
     } catch (e) { msg.className = 'key-msg err'; msg.textContent = e.message; }

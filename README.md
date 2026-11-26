@@ -153,9 +153,17 @@ O painel, o proxy, o MCP e os `.bat` usam o `provider_router.py`, que tenta os p
 
 **Terminal:** `python provider_router.py status` · `python provider_router.py teste` · `python provider_router.py reset`
 
-### Provedores personalizados (qualquer servidor compatível com a OpenAI)
+**Editar ou remover qualquer provedor** (inclusive os padrão): o botão **✎** no cartão muda o **nome exibido**, fixa um **modelo** (vazio = automático), **liga/desliga** o provedor no rodízio e **remove**. Remover apaga a chave do `~/.env` e esconde o cartão; **Mostrar removidos** traz de volta. Nas chaves extras ("Groq #2"), remover apaga só aquela chave. Os ajustes ficam em `%USERPROFILE%\.biazzitech\providers_override.json`.
 
-Na aba **Provedores**, botão **+ Provedor personalizado** (só administradores). Serve para:
+### Provedores personalizados (texto, imagens ou os dois)
+
+Na aba **Provedores**, botão **+ Provedor personalizado** (só administradores). O campo **Usar para** escolhe em qual lista ele aparece:
+
+- **Texto** — qualquer servidor compatível com a OpenAI; entra no rodízio do chat e no auxiliar.
+- **Imagens** — um **Stable Diffusion de outro PC** (de um amigo, do PC da sala...) com a API WebUI ligada: [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) (`sd-server --listen-ip 0.0.0.0`, de preferência com `--api-key`), **AUTOMATIC1111 / Forge / SD.Next** (iniciados com `--api --listen`, e `--api-auth usuario:senha` se quiser senha). Aparece na aba **Imagens** como ★ Nome, com **os modelos e as LoRAs daquele PC**, modo rápido (se ele tiver a LoRA LCM), imagem de referência e as LoRAs das fichas de personagem. Chave: a `--api-key` do sd-server, ou `usuario:senha` do `--api-auth`.
+- **Os dois** — servidor que faz texto e imagens.
+
+Exemplos de texto:
 
 - **Ollama de outro PC da rede** — `http://IP-DO-PC:11434/v1` (no outro PC, deixe o Ollama aceitar conexões da rede com a variável `OLLAMA_HOST=0.0.0.0`).
 - **LM Studio** — `http://localhost:1234/v1`.
@@ -278,6 +286,7 @@ O "Ollama das imagens": gera **no seu PC, sem internet e sem créditos**, e acei
 - **Imagem de referência:** a 1ª referência vira "imagem para imagem"; **força da ref.** controla quanto a nova pode mudar.
 - **Fichas de personagem:** campos **LoRA do personagem**, peso e **palavra de ativação**. Quando o personagem está na cena (citado ou marcado), a LoRA e a palavra entram sozinhas — inclusive em cada quadro das páginas de quadrinho. O botão **📦 Pacote para treinar LoRA** baixa as imagens da ficha com legendas no formato dos treinadores (Civitai, kohya_ss, OneTrainer).
 - Licenças: SD 1.5 e SDXL usam licenças abertas OpenRAIL (uso livre, inclusive comercial, com restrições de uso nocivo); o instalador mostra o aviso antes de baixar.
+- **Já testado de verdade:** versão leve com placa NVIDIA de 4 GB via Vulkan (modo rápido ~30 s por imagem 512px, qualidade ~2 min, imagem de referência). **Experimental** (feito, coberto por testes automáticos, mas ainda sem teste em máquina real): motor só de processador, versão pesada (SDXL) e servidores AUTOMATIC1111/Forge de outro PC. Se der problema, abra uma issue com o arquivo `sdlocal\sd-server.log`.
 - Opções do instalador: `-SomenteVerificar`, `-Instalar sim|nao`, `-Versao leve|pesado|ambas`, `-Backend vulkan|cpu`, `-Forcar`. No `~/.env`: `SDLOCAL_ENABLED`, `SDLOCAL_MODEL`, `SDLOCAL_PORT` (padrão 7861), `SDLOCAL_ARGS`, `SDLOCAL_ARGS_SDXL`, `SDLOCAL_URL` (usar um `sd-server` que já roda em outro PC).
 
 ---
