@@ -85,6 +85,18 @@ class PromptAssistTest(unittest.TestCase):
         self.assertEqual(out["aspect"], "1:1")  # proporção inválida vira 1:1
         self.assertEqual((out["negative"], out["characters_used"], out["provider"]), ("text", ["k"], "fake"))
 
+    def test_is_multi_panel_vs_splash(self):
+        # Sem página ou Página inteira sem menção a múltiplos quadros -> assume splash (1 imagem)
+        self.assertFalse(prompt_assist.is_multi_panel("guerreiro na chuva"))
+        self.assertFalse(prompt_assist.is_multi_panel("ilustração épica", layout="auto"))
+        self.assertFalse(prompt_assist.is_multi_panel("página de 3 quadros", layout="pagina_inteira"))
+        self.assertFalse(prompt_assist.is_multi_panel("um quadro só de tela inteira", layout="auto"))
+        # Modelo composto escolhido ou pedido com vários quadros -> página multi-quadros
+        self.assertTrue(prompt_assist.is_multi_panel("cena de luta", layout="grade_4"))
+        self.assertTrue(prompt_assist.is_multi_panel("página de 5 quadros estilo mangá", layout="auto"))
+        self.assertTrue(prompt_assist.is_multi_panel("cena", layout="auto", layout_text="cortes dinâmicos, vaza para o quadro 2"))
+        self.assertTrue(prompt_assist.is_multi_panel("cena", layout="", sfx_text="quadro 3: BANG!"))
+
 
 class McpTest(unittest.TestCase):
     def test_tools_list_and_old_names(self):

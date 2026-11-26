@@ -110,6 +110,51 @@ function codeFilesBar(text) {
   return bar;
 }
 
+// Controle de ações longas (permite cancelar chat, geração de arte ou planejamento a qualquer momento)
+const activeTasks = { chat: null, img: null };
+
+function syncCancelButtons() {
+  const cc = document.getElementById('chat-cancel');
+  const ic = document.getElementById('img-cancel');
+  const sc = document.getElementById('status-cancel');
+  if (cc) cc.style.display = activeTasks.chat ? '' : 'none';
+  if (ic) ic.style.display = activeTasks.img ? '' : 'none';
+  if (sc) sc.style.display = (activeTasks.img || activeTasks.chat) ? '' : 'none';
+}
+
+function beginTask(kind, opts) {
+  if (activeTasks[kind]) activeTasks[kind].ctrl.abort();
+  const ctrl = new AbortController();
+  activeTasks[kind] = { ctrl, ...(opts || {}) };
+  syncCancelButtons();
+  return ctrl.signal;
+}
+
+function endTask(kind, signal) {
+  if (activeTasks[kind] && activeTasks[kind].ctrl.signal === signal) {
+    activeTasks[kind] = null;
+    syncCancelButtons();
+  }
+}
+
+function isAbort(err) {
+  return !!(err && (err.name === 'AbortError' || /aborted|abort/i.test(err.message || '')));
+}
+
+function cancelActiveTask(kind) {
+  const k = kind || (activeTasks.img ? 'img' : (activeTasks.chat ? 'chat' : null));
+  const t = k && activeTasks[k];
+  if (!t) return;
+  const prov = t.provider;
+  t.ctrl.abort();
+  activeTasks[k] = null;
+  syncCancelButtons();
+  if (prov === 'sdlocal') {
+    fetch('/api/image/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
+  }
+  setStatus('⏹ Ação cancelada.');
+}
+
 async function sendChat() {
   const input = document.getElementById('chat-input');
   const btn = document.getElementById('chat-send');
@@ -136,6 +181,7 @@ async function sendChat() {
   history.push({ role: 'user', content });
 
   btn.disabled = true;
+  const signal = beginTask('chat');
   document.getElementById('status-txt').textContent = 'Consultando ' + model + '...';
 
   try {
@@ -143,7 +189,8 @@ async function sendChat() {
     const resp = await fetch('/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, messages, temperature: 0.7 })
+      body: JSON.stringify({ model, messages, temperature: 0.7 }),
+      signal
     });
     const data = await resp.json();
     if (!resp.ok || data.error) {
@@ -158,9 +205,16 @@ async function sendChat() {
     document.getElementById('status-txt').textContent = 'Resposta recebida (' + prov + usedModel + ')';
     refreshKeys();
   } catch (err) {
-    addMessage('assistant', 'Erro: ' + err.message, 'Falha');
-    document.getElementById('status-txt').textContent = 'Erro na requisição';
+    if (isAbort(err)) {
+      if (history.length && history[history.length - 1].role === 'user') history.pop();
+      if (!input.value.trim()) input.value = prompt;
+      setStatus('⏹ Pedido cancelado (texto devolvido para a caixa).');
+    } else {
+      addMessage('assistant', 'Erro: ' + err.message, 'Falha');
+      document.getElementById('status-txt').textContent = 'Erro na requisição';
+    }
   } finally {
+    endTask('chat', signal);
     btn.disabled = false;
   }
 }
@@ -280,17 +334,17 @@ function buildImageCard(data, prompt) {
     const action = prompt_('Qual ação animar? (ex.: walking, idle, attack, jump)', 'walking');
     if (!action) return;
     bAnim.disabled = true;
+    const signal = beginTask('img');
     setStatus('Animando com a PixelLab (pode levar alguns minutos)...');
     try {
       const d = await requestImages({ provider: 'pixellab', mode: 'animar', prompt: action, reference_name: data.file_name,
-                                      transparent: true, frames: 8 });
+                                      transparent: true, frames: 8 }, signal);
       const gal = document.getElementById('image-gallery');
       (d.images || [d]).slice().reverse().forEach(im => gal.prepend(buildImageCard(im, action)));
       setStatus((d.images || [d]).length + ' quadro(s) da animação salvos.');
     } catch (e) {
-      alert('Não deu para animar: ' + e.message);
-      setStatus('Falha ao animar');
-    } finally { bAnim.disabled = false; }
+      if (!isAbort(e)) { alert('Não deu para animar: ' + e.message); setStatus('Falha ao animar'); }
+    } finally { endTask('img', signal); bAnim.disabled = false; }
   };
 
   // Reutilizar o prompt / corrigir o que saiu errado
@@ -346,6 +400,12 @@ async function applySettings(d) {
   if (prov === 'pollinations') {
     if (st.model) document.getElementById('img-model').value = st.model;
     if (st.aspect) document.getElementById('img-aspect').value = st.aspect;
+  } else if (prov === 'sdlocal' || isRemoteSd(prov)) {
+    const sm = document.getElementById('sd-model');
+    if (st.model && [...sm.options].some(o => o.value === st.model)) sm.value = st.model;
+    if (st.aspect) document.getElementById('sd-aspect').value = st.aspect;
+    if (st.fast != null) document.getElementById('sd-fast').checked = !!st.fast;
+    if (st.strength != null) document.getElementById('sd-strength').value = st.strength;
   } else {
     if (st.mode) { document.getElementById('pix-mode').value = st.mode; onPixModeChange(); }
     if (st.width) document.getElementById('pix-w').value = st.width;
@@ -368,11 +428,12 @@ async function fixImagePrompt(d, btn) {
   const problem = prompt_('O que saiu errado nesta imagem?\n(ex.: mãos deformadas; o cabelo deveria ser branco; apareceu texto; estilo errado; faltou um personagem)', '');
   if (!problem) return;
   btn.disabled = true;
+  const signal = beginTask('img');
   setStatus('O auxiliar está analisando a imagem e corrigindo o prompt...');
   try {
     const r = await fetch('/api/prompt-fix', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt: d.prompt, problem, image_name: d.file_name, generator: d.provider || 'pollinations',
-                             model: document.getElementById('assist-model').value }) });
+                             model: document.getElementById('assist-model').value }), signal });
     const f = await r.json().catch(() => ({}));
     if (!r.ok || !f.ok) throw new Error(f.message || ('HTTP ' + r.status));
     await applySettings(d);
@@ -382,20 +443,35 @@ async function fixImagePrompt(d, btn) {
     const again = confirm('Prompt corrigido por ' + (f.provider || '') + ' / ' + (f.model || '') + '.\n\nO que mudou: ' +
                           (f.explanation || '-') + '\n\nGerar de novo agora com o prompt corrigido?');
     setStatus('Prompt corrigido colocado na caixa de geração.');
+    endTask('img', signal);
     if (again) generateImage({ direct: true });
   } catch (e) {
-    alert('Não deu para corrigir: ' + e.message);
-    setStatus('Falha ao corrigir o prompt');
-  } finally { btn.disabled = false; }
+    if (!isAbort(e)) { alert('Não deu para corrigir: ' + e.message); setStatus('Falha ao corrigir o prompt'); }
+  } finally { endTask('img', signal); btn.disabled = false; }
+}
+
+function setAspectSelects(aspect) {
+  if (!aspect) return;
+  for (const id of ['img-aspect', 'sd-aspect']) {
+    const asp = document.getElementById(id);
+    if (asp && [...asp.options].some(o => o.value === aspect)) asp.value = aspect;
+  }
 }
 
 async function assistSinglePrompt() {
   const instruction = document.getElementById('img-input').value.trim();
   const text = document.getElementById('assist-text').value;
-  if (!instruction && !text.trim()) { alert('Escreva na caixa de baixo o que você quer na imagem (ou cole um texto de referência).'); return; }
+  const layout = document.getElementById('comic-layout').value;
+  const layout_text = document.getElementById('layout-text').value;
+  const sfx_text = document.getElementById('sfx-text').value;
+  const layObj = layoutById(layout);
+  if (!instruction && !text.trim()) { alert('Escreva na caixa de baixo o que você quer na imagem/página (ou cole um texto de referência).'); return; }
   const btn = document.getElementById('assist-single');
-  btn.disabled = true;
-  setStatus('O auxiliar está escrevendo o prompt' + (refs.length ? ' e analisando ' + refs.length + ' imagem(ns)' : '') + '...');
+  const sendBtn = document.getElementById('img-send');
+  btn.disabled = sendBtn.disabled = true;
+  const signal = beginTask('img');
+  setStatus((layObj && layObj.count > 1 ? 'O auxiliar está gerando os prompts dos ' + layObj.count + ' quadros' : 'O auxiliar está escrevendo o(s) prompt(s)') +
+            (refs.length ? ' e analisando ' + refs.length + ' imagem(ns)' : '') + '...');
   try {
     const images = [], image_names = [];
     for (const r of refs) {
@@ -403,27 +479,39 @@ async function assistSinglePrompt() {
       else images.push(await shrinkDataUrl(r.data));
     }
     const resp = await fetch('/api/prompt-assist', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'single', instruction, text, images, image_names,
+      body: JSON.stringify({ mode: 'auto', instruction, text, images, image_names,
                              model: document.getElementById('assist-model').value,
                              generator: document.getElementById('img-provider').value,
-                             characters: [...selectedChars], auto_characters: true }) });
+                             layout, layout_text, sfx_text,
+                             sfx_mode: document.getElementById('sfx-draw').checked ? 'draw' : 'overlay',
+                             characters: [...selectedChars], auto_characters: true }), signal });
     const d = await resp.json().catch(() => ({}));
     if (!resp.ok || !d.ok) throw new Error(d.message || ('HTTP ' + resp.status));
+    if (d.kind === 'panels') {
+      currentPlan = d;
+      currentPlan.instruction = instruction;
+      renderPlan();
+      (d.characters_used || []).forEach(id => selectedChars.add(id));
+      renderCharChips();
+      setStatus('Prompts gerados para ' + d.panels.length + ' quadro(s) por ' + (d.provider || '') + ' / ' + (d.model || '') + '. Gere cada quadro como imagem ou todos de uma vez.');
+      return;
+    }
     (d.characters_used || []).forEach(id => selectedChars.add(id));
     renderCharChips();
     document.getElementById('assist-on').checked = false;
     onAssistToggle();
-    const asp = document.getElementById('img-aspect');
-    if (asp && d.aspect && [...asp.options].some(o => o.value === d.aspect)) asp.value = d.aspect;
+    setAspectSelects(d.aspect);
     const inp = document.getElementById('img-input');
     inp.value = d.prompt + (d.negative ? '\nAvoid: ' + d.negative : '');
     inp.focus();
-    setStatus('Prompt escrito por ' + (d.provider || '') + ' / ' + (d.model || '') +
+    setStatus('Prompt de tela inteira (splash) escrito por ' + (d.provider || '') + ' / ' + (d.model || '') +
               (d.explanation ? ' — ' + d.explanation : '') + ' Revise e clique em Gerar Arte.');
   } catch (e) {
-    alert('O auxiliar não conseguiu escrever o prompt: ' + e.message);
-    setStatus('Falha no auxiliar de prompt');
-  } finally { btn.disabled = false; }
+    if (!isAbort(e)) {
+      alert('O auxiliar não conseguiu escrever o prompt: ' + e.message);
+      setStatus('Falha no auxiliar de prompt');
+    }
+  } finally { endTask('img', signal); btn.disabled = sendBtn.disabled = false; }
 }
 
 async function planPanels() {
@@ -431,6 +519,7 @@ async function planPanels() {
   if (!instruction) { alert('Escreva o pedido na caixa de baixo (ex.: página de 5 quadros...).'); return; }
   const btn = document.getElementById('img-send');
   btn.disabled = true;
+  const signal = beginTask('img');
   setStatus('O auxiliar está planejando os quadros' + (refs.length ? ' e analisando ' + refs.length + ' imagem(ns)' : '') + '...');
   try {
     const images = [], image_names = [];
@@ -446,7 +535,7 @@ async function planPanels() {
                              layout_text: document.getElementById('layout-text').value,
                              sfx_text: document.getElementById('sfx-text').value,
                              sfx_mode: document.getElementById('sfx-draw').checked ? 'draw' : 'overlay',
-                             characters: [...selectedChars], auto_characters: true }) });
+                             characters: [...selectedChars], auto_characters: true }), signal });
     const d = await resp.json().catch(() => ({}));
     if (!resp.ok || !d.ok) throw new Error(d.message || ('HTTP ' + resp.status));
     currentPlan = d;
@@ -458,9 +547,11 @@ async function planPanels() {
               (d.images_used ? ' (viu ' + d.images_used + ' imagem(ns))' : '') +
               ((d.characters_used || []).length ? ', fichas: ' + d.characters_used.length : '') + '. Revise e gere.');
   } catch (e) {
-    alert('O auxiliar não conseguiu planejar: ' + e.message);
-    setStatus('Falha no auxiliar de prompt');
-  } finally { btn.disabled = false; }
+    if (!isAbort(e)) {
+      alert('O auxiliar não conseguiu planejar: ' + e.message);
+      setStatus('Falha no auxiliar de prompt');
+    }
+  } finally { endTask('img', signal); btn.disabled = false; }
 }
 
 function renderPlan() {
@@ -521,14 +612,17 @@ function renderPlan() {
   });
 }
 
-async function generatePanel(i, btn, thumb) {
+async function generatePanel(i, btn, thumb, sharedSignal) {
   const pn = currentPlan.panels[i];
   const prompt = (pn.prompt || '').trim() + (pn.negative ? '\nAvoid: ' + pn.negative : '');
-  if (!prompt.trim()) return;
+  if (!prompt.trim()) return true;
   btn.disabled = true;
+  const req = withCharacterLoras(currentImageRequest(prompt, pn.aspect));
+  const ownSignal = sharedSignal ? null : beginTask('img', { provider: req.provider });
+  const signal = sharedSignal || ownSignal;
   setStatus('Gerando quadro ' + (pn.n || i + 1) + '...');
   try {
-    const data = await requestImages(withCharacterLoras(currentImageRequest(prompt, pn.aspect)));
+    const data = await requestImages(req, signal);
     const list = data.images || [data];
     const gal = document.getElementById('image-gallery');
     list.slice().reverse().forEach(im => gal.prepend(buildImageCard(im, prompt)));
@@ -536,21 +630,34 @@ async function generatePanel(i, btn, thumb) {
     thumb.src = list[0].data_url; thumb.style.display = '';
     btn.textContent = 'Gerar de novo';
     setStatus('Quadro ' + (pn.n || i + 1) + ' pronto.');
+    return true;
   } catch (e) {
+    if (isAbort(e)) return false;
     alert('Quadro ' + (pn.n || i + 1) + ': ' + e.message);
     setStatus('Falha no quadro ' + (pn.n || i + 1));
-  } finally { btn.disabled = false; }
+    return true;
+  } finally {
+    if (ownSignal) endTask('img', ownSignal);
+    btn.disabled = false;
+  }
 }
 
 async function generateAllPanels(btn) {
   btn.disabled = true;
+  const prov = document.getElementById('img-provider').value;
+  const signal = beginTask('img', { provider: prov });
   try {
     for (let i = 0; i < currentPlan.panels.length; i++) {
+      if (signal.aborted) break;
       const pn = currentPlan.panels[i];
-      await generatePanel(i, pn._btn, pn._thumb);
+      const cont = await generatePanel(i, pn._btn, pn._thumb, signal);
+      if (!cont || signal.aborted) break;
     }
-    setStatus('Todos os quadros gerados. Use "Montar página" para juntar.');
-  } finally { btn.disabled = false; }
+    if (!signal.aborted) setStatus('Todos os quadros gerados. Use "Montar página" para juntar.');
+  } finally {
+    endTask('img', signal);
+    btn.disabled = false;
+  }
 }
 
 function loadImg(src) {
@@ -606,11 +713,12 @@ async function montagePage(btn) {
   } finally { btn.disabled = false; }
 }
 
-async function requestImages(req) {
+async function requestImages(req, signal) {
   const resp = await fetch('/api/image', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(req)
+    body: JSON.stringify(req),
+    signal
   });
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok || data.error) throw new Error(data.error || ('HTTP ' + resp.status));
@@ -933,6 +1041,7 @@ async function generateImage(opts) {
   if (provider === 'pollinations' && refs.length) setStatus('Aviso: o Flux/Pollinations não usa imagem de referência (use o Auxiliar de prompt para descrever os personagens).');
 
   btn.disabled = true;
+  const signal = beginTask('img', { provider });
   setStatus(provider === 'pollinations'
     ? 'Gerando imagem privada (' + req.model + ', ' + req.aspect + ')...'
     : (provider === 'sdlocal' || isRemoteSd(provider))
@@ -940,16 +1049,19 @@ async function generateImage(opts) {
       : 'Gerando com ' + provider + ' (' + req.mode + ')... pode levar alguns minutos.');
 
   try {
-    const data = await requestImages(req);
+    const data = await requestImages(req, signal);
     const list = data.images || [data];
     const gal = document.getElementById('image-gallery');
     list.slice().reverse().forEach(im => gal.prepend(buildImageCard(im, prompt)));
     setStatus(list.length > 1 ? list.length + ' imagens salvas em ' + list[0].saved_path.replace(/[^\\/]+$/, '')
                               : 'Imagem salva em ' + list[0].saved_path);
   } catch (err) {
-    alert('Erro ao gerar imagem: ' + err.message);
-    document.getElementById('status-txt').textContent = 'Erro ao gerar imagem';
+    if (!isAbort(err)) {
+      alert('Erro ao gerar imagem: ' + err.message);
+      document.getElementById('status-txt').textContent = 'Erro ao gerar imagem';
+    }
   } finally {
+    endTask('img', signal);
     btn.disabled = false;
   }
 }
@@ -1449,6 +1561,8 @@ function onLayoutChange() {
   drawLayoutThumb(document.getElementById('layout-preview'), lay);
   const delBtn = document.getElementById('layout-del-btn');
   if (delBtn) delBtn.style.display = lay && lay.custom ? '' : 'none';
+  const sbtn = document.getElementById('assist-single');
+  if (sbtn) sbtn.textContent = (lay && lay.count > 1) ? ('✨ Gerar prompts (' + lay.count + ' quadros)') : '✨ Gerar prompt';
 }
 
 async function onLayoutFile(input) {
@@ -2232,18 +2346,50 @@ async function loadAccess() {
   }
   box.appendChild(hs);
 
-  // ---- Porta
-  const portS = section('Porta');
+  // ---- Porta e Servidor
+  const portS = section('Porta e Servidor');
   portS.appendChild(row('Em uso agora', String(d.running_port)));
   const pl = el('div', 'key-line');
   const pin = el('input'); pin.type = 'number'; pin.min = 1024; pin.max = 65535; pin.value = d.config.port; pin.style.width = '110px';
   const pbtn = el('button', 'mini-btn', 'Salvar porta');
+  const rbtn = el('button', 'mini-btn danger', '↻ Reiniciar servidor');
+  rbtn.title = 'Recarrega configurações, chaves e aplica mudança de porta (só administradores)';
   const pmsg = el('div', 'key-msg');
   pbtn.onclick = async () => {
     try { const r = await accessPost('port', { port: parseInt(pin.value, 10) }); pmsg.className = 'key-msg ok'; pmsg.textContent = r.message; }
     catch (e) { pmsg.className = 'key-msg err'; pmsg.textContent = e.message; }
   };
-  pl.appendChild(pin); pl.appendChild(pbtn);
+  rbtn.onclick = async () => {
+    if (!confirm('Reiniciar o servidor do BiazziTech AI Studio agora?\n\nPedidos em andamento serão interrompidos e configurações/porta serão recarregadas.')) return;
+    rbtn.disabled = true;
+    pmsg.className = 'key-msg'; pmsg.textContent = 'Reiniciando servidor... aguarde alguns segundos.';
+    try {
+      const r = await accessPost('restart', {});
+      const targetPort = r.port || d.running_port;
+      const samePort = String(targetPort) === String(location.port || d.running_port);
+      const targetOrigin = samePort ? location.origin : (location.protocol + '//' + location.hostname + ':' + targetPort);
+      await new Promise(res => setTimeout(res, 900));
+      let up = false;
+      for (let i = 0; i < 25; i++) {
+        try {
+          const h = await fetch(targetOrigin + '/healthz', { cache: 'no-store' });
+          if (h.ok) { up = true; break; }
+        } catch (e) {}
+        await new Promise(res => setTimeout(res, 600));
+      }
+      if (!samePort && up) { location.href = targetOrigin + '/?tab=access'; return; }
+      if (up) {
+        pmsg.className = 'key-msg ok'; pmsg.textContent = 'Servidor reiniciado e pronto!';
+        setStatus('Servidor reiniciado com sucesso.');
+        loadMe(); loadProviders(true); setTimeout(loadAccess, 800);
+      } else {
+        pmsg.className = 'key-msg err'; pmsg.textContent = 'O servidor demorou para voltar. Atualize a página (ou acesse a porta ' + targetPort + ').';
+      }
+    } catch (e) {
+      pmsg.className = 'key-msg err'; pmsg.textContent = e.message;
+    } finally { rbtn.disabled = false; }
+  };
+  pl.appendChild(pin); pl.appendChild(pbtn); pl.appendChild(rbtn);
   portS.appendChild(pl); portS.appendChild(pmsg);
   box.appendChild(portS);
 

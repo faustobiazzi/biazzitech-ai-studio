@@ -118,14 +118,46 @@ they want, possibly with a reference text, character sheets and reference images
 Return ONLY a JSON object: {"prompt": "complete self-contained English prompt", "negative": "comma separated things to avoid", "aspect": "16:9|4:3|1:1|3:4|9:16", "explanation": "1-2 short sentences in Brazilian Portuguese saying what you emphasized"}
 
 Rules:
-- One single image (not a comic page, not panels). If the request asks for several images, describe the main one.
+- One single full-frame / splash illustration (never split into comic panels or borders).
 - Put the main subject and action first, then setting, composition/shot, lighting, color palette and art style.
 - Restate the full visual look of every character in the image (hair, eyes, outfit, colors, body type); use the
   character sheets and reference images for that. If a character sheet has a trigger word, include it.
 - Translate everything to English; keep proper names. Never add text/lettering unless the user asks.
-- Choose the aspect that fits the composition (portrait character -> 3:4, landscape scene -> 16:9, icon -> 1:1).
+- Choose the aspect that fits a full-screen/splash composition (epic wide scene -> 16:9, comic splash/character -> 3:4, square icon/sprite -> 1:1).
 - Keep it under ~900 characters (much shorter for pixel-art generators, as the target hint says).
 """
+
+_MULTI_PANEL_RE = re.compile(
+    r"(\b([2-9]|1[0-6]|dois|duas|tr[eê]s|quatro|cinco|seis|sete|oito|nove|dez|v[aá]ri[oa]s|m[uú]ltipl[oa]s)"
+    r"\s*(quadros?|pain[eé]is|panels?|tiras?|cenas?)\b"
+    r"|cada\s+par[aá]grafo\s+[eé]\s+um\s+quadro"
+    r"|um\s+quadro\s+por\s+par[aá]grafo"
+    r"|\b(quadros?|pain[eé]is)\s+(din[aâ]micos?|iguais|inclinados?|dividid\w*)"
+    r"|\b(quadro|painel|panel)\s*#?\s*([2-9]|1[0-6])\b"
+    r"|\b(storyboard|hist[oó]ria\s+em\s+quadrinhos|p[aá]gina\s+de\s+quadrinhos|sequ[eê]ncia\s+de\s+(quadros|cenas|imagens))\b)",
+    re.I,
+)
+_SINGLE_SPLASH_RE = re.compile(
+    r"\b((1|um|uma)\s+(uúnic[oa]\s+|só\s+)?(quadro|painel|panel|imagem|ilustra[cç][aã]o|arte)|tela\s+inteira|p[aá]gina\s+inteira|splash(\s+page)?)\b",
+    re.I,
+)
+
+
+def is_multi_panel(instruction="", text="", layout="", layout_text="", sfx_text=""):
+    """True se o pedido/configuração descreve uma página composta (vários quadros);
+    False se for 1 quadro só ou não informar (assume imagem única de tela inteira / splash)."""
+    import comic_layouts
+    lid = (layout or "").strip()
+    if lid and lid != "auto":
+        lay = comic_layouts.get(lid)
+        if lay:
+            return lay["count"] > 1
+    probe = "\n".join([instruction or "", layout_text or "", sfx_text or ""])
+    if _MULTI_PANEL_RE.search(probe):
+        return True
+    if _SINGLE_SPLASH_RE.search(probe):
+        return False
+    return False
 
 
 class AssistError(Exception):

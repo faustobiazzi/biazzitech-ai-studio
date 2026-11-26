@@ -243,8 +243,15 @@ class StudioHandler(BaseHTTPRequestHandler):
                 self._send_json(400, {"ok": False, "message": err})
                 return
             access.set_config(port=int(port))
-            self._send_json(200, {"ok": True, "message": f"Porta {port} salva. Vale na próxima vez que o servidor iniciar "
-                                                         "(feche e abra o atalho, ou reinicie o Antigravity)."})
+            self._send_json(200, {"ok": True, "message": f"Porta {port} salva. Clique em 'Reiniciar servidor' abaixo "
+                                                         "para aplicar agora (ou feche e abra o atalho)."})
+        elif path == "/api/access/restart":
+            next_port = int(access.get_config().get("port") or self.server.server_port)
+            sidecar_port = os.environ.get("ANTIGRAVITY_SIDECAR_WEB_PORT")
+            target_port = int(sidecar_port) if (sidecar_port and sidecar_port.isdigit()) else next_port
+            schedule_restart()
+            self._send_json(200, {"ok": True, "restarting": True, "port": target_port,
+                                  "message": f"Reiniciando o servidor (porta {target_port})..."})
         elif path == "/api/access/users":
             action, name = req.get("action"), (req.get("name") or "").strip()
             if action == "add":
@@ -521,12 +528,35 @@ class StudioHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "text": text, "chars": len(text), "warning": warn})
             return
 
+        if parsed_path == "/api/image/cancel":
+            if not self._guard("imagens", check_origin=True):
+                return
+            stopped = False
+            try:
+                import sd_local
+                if sd_local._proc.get("p") and sd_local._proc["p"].poll() is None:
+                    sd_local.stop_server()
+                    stopped = True
+            except Exception:
+                pass
+            self._send_json(200, {"ok": True, "stopped_sd": stopped, "message": "Geração cancelada."})
+            return
+
         if parsed_path == "/api/prompt-assist":
             if not self._guard("imagens", check_origin=True):
                 return
             req = self._read_json(body)
-            single = req.get("mode") == "single"
-            if not (req.get("instruction") or "").strip() and not (single and (req.get("text") or "").strip()):
+            mode = (req.get("mode") or "plan").strip().lower()
+            instr = req.get("instruction") or ""
+            ref_text = req.get("text") or ""
+            lay_id = req.get("layout") or ""
+            lay_text = req.get("layout_text") or ""
+            sfx_text = req.get("sfx_text") or ""
+            if mode == "auto":
+                use_single = not prompt_assist.is_multi_panel(instr, ref_text, lay_id, lay_text, sfx_text)
+            else:
+                use_single = (mode == "single")
+            if not instr.strip() and not (use_single and ref_text.strip()):
                 self._send_json(400, {"ok": False, "message": "Escreva o que você quer (ex.: página de 5 quadros...)."})
                 return
             images = [u for u in (req.get("images") or []) if isinstance(u, str) and u.startswith("data:image/")][:6]
@@ -537,7 +567,7 @@ class StudioHandler(BaseHTTPRequestHandler):
             # fichas: as marcadas no painel + (opcional) as citadas pelo nome no pedido/texto
             ids = [i for i in (req.get("characters") or []) if isinstance(i, str)]
             if req.get("auto_characters", True):
-                ids += characters.detect(req.get("instruction") or "", req.get("text") or "")
+                ids += characters.detect(instr, ref_text)
             chars = []
             for cid in dict.fromkeys(ids):
                 c = characters.get(cid)
@@ -546,20 +576,20 @@ class StudioHandler(BaseHTTPRequestHandler):
                     c["image_data"] = [u for u in (characters.image_data_url(n) for n in c.get("images", [])[:2]) if u]
                     chars.append(c)
             try:
-                if single:
-                    out = prompt_assist.single(req.get("instruction") or "", req.get("text") or "", images[:6],
+                if use_single:
+                    out = prompt_assist.single(instr, ref_text, images[:6],
                                                req.get("model"), req.get("generator") or "pollinations", characters=chars[:6])
-                    self._send_json(200, {"ok": True, **out})
+                    self._send_json(200, {"ok": True, "kind": "single", **out})
                     return
-                plan = prompt_assist.plan(req["instruction"], req.get("text") or "", images[:6],
+                plan = prompt_assist.plan(instr or ref_text[:400], ref_text, images[:6],
                                           req.get("model"), req.get("generator") or "pollinations",
-                                          characters=chars[:6], layout=req.get("layout") or "",
-                                          layout_text=req.get("layout_text") or "", sfx_text=req.get("sfx_text") or "",
+                                          characters=chars[:6], layout=lay_id,
+                                          layout_text=lay_text, sfx_text=sfx_text,
                                           sfx_mode=req.get("sfx_mode") or "overlay")
             except prompt_assist.AssistError as e:
                 self._send_json(502, {"ok": False, "message": str(e)})
                 return
-            self._send_json(200, {"ok": True, **plan})
+            self._send_json(200, {"ok": True, "kind": "panels", **plan})
             return
 
         if parsed_path == "/api/comic/layouts":
@@ -1139,6 +1169,42 @@ def _serve_loop(port: int, lan_capable: bool, on_ready=None):
         with _serve_lock:
             if _servers.get(port) is httpd:
                 _servers.pop(port, None)
+
+
+def _restart_command():
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--no-browser"]
+    return [sys.executable, os.path.abspath(__file__)]
+
+
+def schedule_restart(delay=0.35):
+    """Reinicia o servidor: para o SD local, libera as portas atuais e sobe um processo limpo."""
+    def worker():
+        global _stopping
+        time.sleep(delay)
+        _stopping = True
+        try:
+            import sd_local
+            sd_local.stop_server()
+        except Exception:
+            pass
+        with _serve_lock:
+            current = list(_servers.values())
+            _servers.clear()
+        for httpd in current:
+            try:
+                httpd.shutdown()
+                httpd.server_close()
+            except Exception:
+                pass
+        # Como Sidecar do Antigravity (restart_policy=always), o próprio supervisor relança o processo
+        if not os.environ.get("ANTIGRAVITY_SIDECAR_WEB_PORT"):
+            import subprocess
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+            subprocess.Popen(_restart_command(), cwd=os.path.dirname(os.path.abspath(__file__)),
+                             close_fds=True, creationflags=flags)
+        os._exit(0)
+    threading.Thread(target=worker, daemon=True).start()
 
 
 def request_rebind():

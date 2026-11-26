@@ -140,6 +140,7 @@
     <div class="composer-side">
       <input id="chat-file" type="file" multiple accept=".docx,.md,.markdown,.txt,.pdf,.csv,.json,.gd" style="display:none" onchange="onChatFiles(this)">
       <button class="mini-btn" onclick="document.getElementById('chat-file').click()" title="Anexar .docx, .md, .txt ou .pdf como referência">📎 Anexar</button>
+      <button id="chat-cancel" class="mini-btn danger" style="display:none" onclick="cancelActiveTask('chat')" title="Cancelar pedido em andamento">⏹ Cancelar</button>
       <button id="chat-send" class="primary-btn" onclick="sendChat()">Enviar</button>
     </div>
   </div>
@@ -259,7 +260,8 @@
 
   <div class="composer">
     <textarea id="img-input" placeholder="Descreva a arte (ex: dark dieselpunk bunker corridor, eerie green emergency light, gothic soldier)..."></textarea>
-    <button id="assist-single" class="mini-btn key-save" style="display:none" onclick="assistSinglePrompt()" title="O auxiliar escreve UM prompt completo (com as fichas, o texto e as imagens de referência) e coloca na caixa para você gerar">✨ Gerar prompt</button>
+    <button id="assist-single" class="mini-btn key-save" style="display:none" onclick="assistSinglePrompt()" title="Página com vários quadros: gera um prompt para cada quadro. Um quadro só / não informado: gera um prompt de tela inteira (splash) direto na caixa">✨ Gerar prompt</button>
+    <button id="img-cancel" class="mini-btn danger" style="display:none" onclick="cancelActiveTask('img')" title="Cancelar geração ou planejamento em andamento">⏹ Cancelar</button>
     <button id="img-send" class="primary-btn" onclick="generateImage()">Gerar Arte</button>
   </div>
 </div>
@@ -283,7 +285,10 @@
 </div>
 
 <div class="status-line">
-  <span id="status-txt">Pronto — Endpoint OpenAI ativo em http://localhost:9090/v1</span>
+  <span>
+    <span id="status-txt">Pronto — Endpoint OpenAI ativo em http://localhost:9090/v1</span>
+    <button id="status-cancel" class="mini-btn danger" style="display:none;margin-left:8px" onclick="cancelActiveTask(null)" title="Interromper ação em andamento">⏹ Cancelar</button>
+  </span>
   <span id="keys-txt">Verificando chaves...</span>
 </div>
 
