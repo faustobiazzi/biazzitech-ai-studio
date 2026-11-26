@@ -71,6 +71,33 @@ class RouterTest(unittest.TestCase):
         self.assertTrue(router.VISION_HINT.search("nvidia/nemotron-3.5-super-vl:free"))
         self.assertFalse(router.VISION_HINT.search("openai/gpt-oss-120b:free"))
 
+    # ------------------------------------------------------------ editar / remover provedores padrão
+    def test_edit_disable_remove_and_restore_default_provider(self):
+        write_env(GROQ_API_KEY="gsk_x", GROQ_API_KEY_2="gsk_y")
+        router.load_env()
+        ok, _ = router.edit_provider("groq", {"label": "Groq do trabalho", "model": "llama-3.3-70b-versatile"})
+        self.assertTrue(ok)
+        self.assertEqual(router.PROVIDERS["groq"]["label"], "Groq do trabalho")
+        self.assertEqual(router.PROVIDERS["groq#2"]["label"], "Groq #2")  # a extra não herda o nome
+        self.assertEqual(router.resolve_models("groq", "auto"), ["llama-3.3-70b-versatile"])
+        router.edit_provider("groq", {"disabled": True})
+        self.assertEqual(router.unavailable_reason("groq"), "desligado por você")
+        router.edit_provider("groq", {"disabled": False, "label": ""})
+        self.assertIsNone(router.unavailable_reason("groq"))
+        self.assertEqual(router.PROVIDERS["groq"]["label"], "Groq")
+        # remover a extra apaga só a chave dela
+        self.assertTrue(router.remove_provider("groq#2")[0])
+        self.assertNotIn("groq#2", router.PROVIDERS)
+        self.assertEqual(router.provider_key("groq"), "gsk_x")
+        # remover o padrão: apaga a chave e esconde; restaurar volta (sem a chave)
+        self.assertTrue(router.remove_provider("groq")[0])
+        self.assertEqual(router.provider_key("groq"), "")
+        st = {p["id"]: p for p in router.status()["providers"]}
+        self.assertTrue(st["groq"]["hidden"])
+        self.assertTrue(router.restore_provider("groq")[0])
+        self.assertFalse({p["id"]: p for p in router.status()["providers"]}["groq"]["hidden"])
+        self.assertFalse(router.edit_provider("custom_x", {"label": "y"})[0])
+
     # ------------------------------------------------------------ esperas (cooldown)
     def test_parse_duration(self):
         self.assertEqual(router._parse_duration("2m30s"), 150)

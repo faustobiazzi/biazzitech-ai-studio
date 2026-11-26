@@ -7,6 +7,7 @@ Estúdio de IA para quem cria jogos e histórias: código (Godot 4 / GDScript, L
 - **Quadrinhos**: fichas de personagem reutilizáveis, 22 modelos de página (grades, dinâmicos com cortes inclinados, mistos), divisão da página descrita em texto, personagem que "vaza" do quadro e **onomatopeias** (hachurado, explosão, tremido) letreiradas na montagem.
 - **Imagens**: Flux/Pollinations e **pixel art para jogos** (PixelLab, Retro Diffusion, Scenario), com imagem de referência e animação.
 - **Godot 4**: spritesheet vira `SpriteFrames` com animações nomeadas; tileset vira `TileSet` pronto — é só copiar a pasta para o projeto.
+- **Imagens offline com LoRAs**: Stable Diffusion local leve (SD 1.5, ~1.9 GB, roda até em placa integrada) e, se a máquina aguentar, o SDXL.
 - **Proxy compatível com OpenAI** para Continue, Cline e outras ferramentas.
 - **Usuários, senhas e acesso pela rede** (com HTTPS opcional); **porta configurável**.
 - Só usa a biblioteca padrão do Python (sem `pip`); testes automáticos a cada envio.
@@ -35,7 +36,7 @@ Estúdio de IA para quem cria jogos e histórias: código (Godot 4 / GDScript, L
 4. [Rodízio de provedores e chaves](#4-rodízio-de-provedores-e-chaves)
 5. [Claude e ChatGPT](#5-claude-e-chatgpt)
 6. [Imagens e pixel art](#6-imagens-e-pixel-art) — [quadrinhos](#páginas-de-quadrinho-modelos-divisão-e-onomatopeias) · [fichas de personagem](#fichas-de-personagem) · [Godot](#exportar-para-o-godot-4)
-7. [IA local (Ollama)](#7-ia-local-ollama)
+7. [IA local (Ollama)](#7-ia-local-ollama) — [imagens offline com LoRAs](#imagens-offline-com-loras-stable-diffusion-local)
 8. [Usuários, senhas, rede e porta](#8-usuários-senhas-rede-e-porta)
 9. [Versão .exe (sem Python)](#9-versão-exe-sem-python)
 10. [Continue, Cline e outras ferramentas (proxy OpenAI)](#10-continue-cline-e-outras-ferramentas-proxy-openai)
@@ -152,9 +153,17 @@ O painel, o proxy, o MCP e os `.bat` usam o `provider_router.py`, que tenta os p
 
 **Terminal:** `python provider_router.py status` · `python provider_router.py teste` · `python provider_router.py reset`
 
-### Provedores personalizados (qualquer servidor compatível com a OpenAI)
+**Editar ou remover qualquer provedor** (inclusive os padrão): o botão **✎** no cartão muda o **nome exibido**, fixa um **modelo** (vazio = automático), **liga/desliga** o provedor no rodízio e **remove**. Remover apaga a chave do `~/.env` e esconde o cartão; **Mostrar removidos** traz de volta. Nas chaves extras ("Groq #2"), remover apaga só aquela chave. Os ajustes ficam em `%USERPROFILE%\.biazzitech\providers_override.json`.
 
-Na aba **Provedores**, botão **+ Provedor personalizado** (só administradores). Serve para:
+### Provedores personalizados (texto, imagens ou os dois)
+
+Na aba **Provedores**, botão **+ Provedor personalizado** (só administradores). O campo **Usar para** escolhe em qual lista ele aparece:
+
+- **Texto** — qualquer servidor compatível com a OpenAI; entra no rodízio do chat e no auxiliar.
+- **Imagens** — um **Stable Diffusion de outro PC** (de um amigo, do PC da sala...) com a API WebUI ligada: [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) (`sd-server --listen-ip 0.0.0.0`, de preferência com `--api-key`), **AUTOMATIC1111 / Forge / SD.Next** (iniciados com `--api --listen`, e `--api-auth usuario:senha` se quiser senha). Aparece na aba **Imagens** como ★ Nome, com **os modelos e as LoRAs daquele PC**, modo rápido (se ele tiver a LoRA LCM), imagem de referência e as LoRAs das fichas de personagem. Chave: a `--api-key` do sd-server, ou `usuario:senha` do `--api-auth`.
+- **Os dois** — servidor que faz texto e imagens.
+
+Exemplos de texto:
 
 - **Ollama de outro PC da rede** — `http://IP-DO-PC:11434/v1` (no outro PC, deixe o Ollama aceitar conexões da rede com a variável `OLLAMA_HOST=0.0.0.0`).
 - **LM Studio** — `http://localhost:1234/v1`.
@@ -259,6 +268,27 @@ Roda um modelo **no seu PC**: grátis, sem limite e sem internet. O passo 6 do i
 - Opções: `-SomenteVerificar`, `-Instalar sim|nao`, `-Forcar`.
 - No painel, modelo **Ollama local** (`ollama/auto`) usa só ele. Modelos locais são bem mais fracos que Claude/Gemini para código complexo; servem para tarefas pequenas, tradução e uso offline.
 
+### Imagens offline com LoRAs (Stable Diffusion local)
+
+O "Ollama das imagens": gera **no seu PC, sem internet e sem créditos**, e aceita **LoRAs** (estilos e personagens treinados). Feito para **máquinas simples**: o motor é o [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), um executável pequeno sem Python/PyTorch que usa **qualquer placa de vídeo** (NVIDIA, AMD ou Intel, inclusive integrada, via Vulkan) ou só o processador.
+
+`bat\Instalar_SD_Local_IA.bat` (ou o passo 6 do instalador principal) **analisa a máquina** e oferece:
+
+| Versão | O que baixa | Para quem |
+|---|---|---|
+| **Leve** | SD 1.5 quantizado (GGUF Q8) + LoRA LCM — **~1.9 GB** | 8 GB de RAM bastam; com placa de vídeo sai em segundos, só com processador leva 1–3 min |
+| **Pesada** (opcional) | SDXL + VAE corrigido + LoRA LCM SDXL + LoRA de pixel art — **~7.8 GB** | só é oferecida se sobrar recurso: placa de 8 GB, ou 4 GB + 24 GB de RAM (mais lenta) |
+
+- O motor vai para `%USERPROFILE%\.biazzitech\sdlocal` (motor, `models\checkpoints`, `models\loras`, `models\vae`). Downloads interrompidos continuam de onde pararam.
+- Se o motor de placa de vídeo (Vulkan) não funcionar, o instalador troca sozinho para o de processador.
+- No painel: **Gerador → Stable Diffusion local**. Escolha o modelo (leve/pesado), a proporção e **rápido (LCM)** — 6 passos em vez de ~22, o que deixa tudo várias vezes mais rápido. O motor liga sozinho na primeira imagem e libera a memória depois de 10 minutos parado.
+- **LoRAs:** botão **LoRAs (n)** lista as instaladas, com peso. Para adicionar, baixe o `.safetensors` (ex.: civitai.com, huggingface.co) do **mesmo tipo do modelo** (SD 1.5 ou SDXL) e coloque em `models\loras`. Muitas pedem uma palavra de ativação no prompt.
+- **Imagem de referência:** a 1ª referência vira "imagem para imagem"; **força da ref.** controla quanto a nova pode mudar.
+- **Fichas de personagem:** campos **LoRA do personagem**, peso e **palavra de ativação**. Quando o personagem está na cena (citado ou marcado), a LoRA e a palavra entram sozinhas — inclusive em cada quadro das páginas de quadrinho. O botão **📦 Pacote para treinar LoRA** baixa as imagens da ficha com legendas no formato dos treinadores (Civitai, kohya_ss, OneTrainer).
+- Licenças: SD 1.5 e SDXL usam licenças abertas OpenRAIL (uso livre, inclusive comercial, com restrições de uso nocivo); o instalador mostra o aviso antes de baixar.
+- **Já testado de verdade:** versão leve com placa NVIDIA de 4 GB via Vulkan (modo rápido ~30 s por imagem 512px, qualidade ~2 min, imagem de referência). **Experimental** (feito, coberto por testes automáticos, mas ainda sem teste em máquina real): motor só de processador, versão pesada (SDXL) e servidores AUTOMATIC1111/Forge de outro PC. Se der problema, abra uma issue com o arquivo `sdlocal\sd-server.log`.
+- Opções do instalador: `-SomenteVerificar`, `-Instalar sim|nao`, `-Versao leve|pesado|ambas`, `-Backend vulkan|cpu`, `-Forcar`. No `~/.env`: `SDLOCAL_ENABLED`, `SDLOCAL_MODEL`, `SDLOCAL_PORT` (padrão 7861), `SDLOCAL_ARGS`, `SDLOCAL_ARGS_SDXL`, `SDLOCAL_URL` (usar um `sd-server` que já roda em outro PC).
+
 ---
 
 ## 8. Usuários, senhas, rede e porta
@@ -332,6 +362,7 @@ Streaming (SSE) funciona. A resposta traz o campo `provider` com quem respondeu.
 | Estado do rodízio | `%USERPROFILE%\.biazzitech\router_state.json` |
 | Fichas de personagem | `%USERPROFILE%\.biazzitech\personagens.json` e `personagens\` |
 | Exportações para o Godot | `%USERPROFILE%\.biazzitech\imagens\godot\` |
+| Stable Diffusion local (motor, modelos, LoRAs) | `%USERPROFILE%\.biazzitech\sdlocal\` |
 | Registro de logins | `%USERPROFILE%\.biazzitech\acessos.log` |
 | Certificado HTTPS (opcional) | `%USERPROFILE%\.biazzitech\cert.pem` e `key.pem` |
 | Sidecar do Antigravity | `%USERPROFILE%\.gemini\config\plugins\biazzitech-ai-studio` |
@@ -352,6 +383,7 @@ Streaming (SSE) funciona. A resposta traz o campo `provider` com quem respondeu.
 | `characters.py` | Fichas de personagem |
 | `comic_layouts.py` | Modelos de página de quadrinho |
 | `godot_export.py` | Exportação de spritesheets/tilesets para o Godot 4 |
+| `sd_local.py` + `instalar_sd_local.ps1` | Stable Diffusion local (offline, LoRAs) e o instalador dele |
 | `doc_extract.py` | Texto de anexos .docx/.md/.txt/.pdf |
 | `studio_mcp.py` | Servidor MCP para o Antigravity (ferramentas `studio_code`, `studio_text`, imagens e status) |
 | `studio_cli.py`, `free_image_gen.py`, `pixai_gen.py` | Ferramentas de linha de comando |

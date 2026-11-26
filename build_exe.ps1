@@ -54,6 +54,7 @@ Invoke-Py (@(
     "--hidden-import", "characters",
     "--hidden-import", "comic_layouts",
     "--hidden-import", "godot_export",
+    "--hidden-import", "sd_local",
     # arquivos temporarios fora do OneDrive (ele trava arquivos durante a limpeza)
     "--distpath", (Join-Path $root "dist"),
     "--workpath", (Join-Path $env:TEMP "biazzitech_build\work"),

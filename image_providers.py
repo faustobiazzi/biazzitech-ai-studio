@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Geração de pixel art / assets de jogo via PixelLab, Retro Diffusion e Scenario.
+Geração de pixel art / assets de jogo via PixelLab, Retro Diffusion e Scenario, e Stable Diffusion local
+(offline, com LoRAs) pelo sd_local.py.
 
 - As chaves e o rodízio entre várias chaves do mesmo provedor vêm do provider_router
   (PIXELLAB_API_KEY, RETRODIFFUSION_API_KEY, SCENARIO_API_KEY=CHAVE:SEGREDO, e _2, _3...).
@@ -383,25 +384,78 @@ def _scenario(opts):
 
 # ---------------------------------------------------------------- entrada
 
-GENERATORS = {"pixellab": _pixellab, "retrodiffusion": _retro, "scenario": _scenario}
+def _sdlocal(opts):
+    import sd_local
+    try:
+        return sd_local.generate(opts)
+    except sd_local.SDError as e:
+        raise ImageError(str(e))
+
+
+GENERATORS = {"pixellab": _pixellab, "retrodiffusion": _retro, "scenario": _scenario, "sdlocal": _sdlocal}
 
 
 def options():
     """Opções para o painel montar os menus."""
+    import sd_local
     return {
         "pixellab": [{"id": m, "label": l} for m, l in PIXELLAB_MODES],
         "retrodiffusion": [{"id": s[0], "label": s[1], "fixed": s[2], "animation": s[3], "needs_reference": s[4]}
                            for s in RETRO_STYLES],
         "scenario": [{"id": "custom", "label": "Modelo pelo modelId"}],
+        "sdlocal_status": sd_local.status(),
+        "sd_remote": [{"id": p, "label": router.PROVIDERS[p]["label"]} for p in router.custom_ids("imagens")],
     }
+
+
+def is_custom_image(provider):
+    """Provedor personalizado cadastrado para imagens (servidor Stable Diffusion de outro PC)."""
+    router.load_env()
+    return provider in router.custom_ids("imagens")
+
+
+def is_image_provider(provider):
+    return provider in GENERATORS or is_custom_image(provider)
+
+
+def _sd_remote(provider, opts):
+    import sd_local
+    if router.unavailable_reason(provider):
+        raise ImageError(f"{router.PROVIDERS[provider]['label']}: {router.unavailable_reason(provider)}.")
+    try:
+        result = sd_local.generate(opts, target=sd_local.remote_target(provider))
+        router._record_ok(provider, "sd", None)
+        return result
+    except sd_local.SDError as e:
+        router._record_error(provider, "sd", 0, str(e))
+        raise ImageError(str(e))
+
+
+def sd_info(provider):
+    """Modelos e LoRAs do SD deste PC ('sdlocal') ou de um servidor personalizado de imagens."""
+    import sd_local
+    if provider == "sdlocal":
+        return sd_local.status()
+    if not is_custom_image(provider):
+        raise ImageError("Gerador desconhecido.")
+    try:
+        info = sd_local.remote_info(sd_local.remote_target(provider))
+    except sd_local.SDError as e:
+        raise ImageError(str(e))
+    info.update({"installed": True, "enabled": True, "remote": True, "running": True,
+                 "label": router.PROVIDERS[provider]["label"]})
+    return info
 
 
 def generate(provider, opts):
     """Gera e devolve lista de (bytes, extensão, rótulo)."""
     fn = GENERATORS.get(provider)
-    if not fn:
+    if fn:
+        imgs = fn(opts)
+    elif is_custom_image(provider):
+        imgs = _sd_remote(provider, opts)
+    else:
         raise ImageError(f"Gerador desconhecido: {provider}")
-    imgs = fn(opts)
     out = []
     for data, label in imgs:
         ext = _ext_of(data)

@@ -154,7 +154,20 @@
       <option value="pixellab">PixelLab (sprites, personagens, tilesets)</option>
       <option value="retrodiffusion">Retro Diffusion (pixel art, animações)</option>
       <option value="scenario">Scenario (modelo próprio)</option>
+      <option value="sdlocal">Stable Diffusion local (offline, LoRAs)</option>
     </select>
+    <span id="sd-controls" style="display:none" class="inline-controls">
+      <label for="sd-model">Modelo:</label>
+      <select id="sd-model"></select>
+      <label for="sd-aspect">Proporção:</label>
+      <select id="sd-aspect">
+        <option value="1:1">1:1</option><option value="3:4">3:4</option><option value="4:3">4:3</option>
+        <option value="16:9">16:9</option><option value="9:16">9:16</option>
+      </select>
+      <label title="Usa a LoRA LCM: 4-8 passos em vez de ~22 (bem mais rápido, ótimo em PC simples)"><input id="sd-fast" type="checkbox" checked> rápido (LCM)</label>
+      <button class="mini-btn" id="sd-lora-btn" onclick="toggleLoraPanel()">LoRAs (0)</button>
+      <label title="Com imagem de referência: quanto a nova imagem pode mudar (0 = igual, 1 = livre)">força da ref. <input id="sd-strength" type="number" min="0.05" max="1" step="0.05" value="0.6" style="width:58px"></label>
+    </span>
     <span id="pix-controls" style="display:none" class="inline-controls">
       <label for="pix-mode">Modo:</label>
       <select id="pix-mode" onchange="onPixModeChange()"></select>
@@ -196,6 +209,7 @@
   </div>
 
   <div class="img-scroll">
+    <div id="lora-panel" class="assist-panel" style="display:none"></div>
     <div id="assist-panel" class="assist-panel" style="display:none">
       <div class="assist-row">
         <label for="assist-model">Modelo do auxiliar:</label>
@@ -252,6 +266,7 @@
     <span style="font-size:12px;color:var(--muted)">Ordem do rodízio: o primeiro provedor ATIVO responde; os que dão limite ou erro entram em espera e voltam sozinhos.</span>
     <button class="mini-btn" onclick="loadProviders(true)">Atualizar</button>
     <button class="mini-btn" onclick="resetProvider(null)">Zerar todas as esperas</button>
+    <button id="btn-show-hidden" class="mini-btn" onclick="toggleHiddenProviders()" style="display:none">Mostrar removidos</button>
     <button id="btn-add-custom" class="mini-btn key-save" onclick="openCustomForm()" title="Qualquer servidor compatível com a OpenAI: Ollama de outro PC, LM Studio, vLLM, um modelo aberto na nuvem...">+ Provedor personalizado</button>
   </div>
   <div id="custom-form-slot"></div>
