@@ -47,6 +47,7 @@ Invoke-Py (@(
     "--paths", $root,
     "--hidden-import", "studio_server",
     "--hidden-import", "provider_router",
+    "--hidden-import", "model_health",
     "--hidden-import", "image_providers",
     "--hidden-import", "access_control",
     "--hidden-import", "doc_extract",

@@ -463,20 +463,135 @@ def _gemini_image(opts):
     return _with_keys("gemini", run)
 
 
+_HF_MAP_CACHE = {}  # repo -> (timestamp, [(kind, sub_path, provider_model_id), ...])
+_HF_PROVIDER_ORDER = ("hf-inference", "fal-ai", "together", "fireworks-ai", "nebius", "hyperbolic")
+
+
+def _hf_router_root(base):
+    b = (base or "https://router.huggingface.co").rstrip("/")
+    for suffix in ("/hf-inference/models", "/hf-inference"):
+        if b.endswith(suffix):
+            b = b[:-len(suffix)]
+    return b
+
+
+def _hf_discover_routes(repo, forced_provider=None):
+    """Consulta na API do Hugging Face quais Inference Providers servem este modelo hoje (cache de 1 h)."""
+    now = time.time()
+    cached = _HF_MAP_CACHE.get(repo)
+    mapping = None
+    if cached and now - cached[0] < 3600:
+        mapping = cached[1]
+    else:
+        url = f"https://huggingface.co/api/models/{repo}?expand[]=inferenceProviderMapping"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": router.USER_AGENT})
+            with urllib.request.urlopen(req, timeout=6) as r:
+                mapping = (json.loads(r.read().decode("utf-8")) or {}).get("inferenceProviderMapping") or {}
+            _HF_MAP_CACHE[repo] = (now, mapping)
+        except Exception:
+            mapping = {}
+
+    providers = [forced_provider] if forced_provider else (
+        [p for p in _HF_PROVIDER_ORDER if p in mapping] + [p for p in mapping if p not in _HF_PROVIDER_ORDER]
+    )
+    routes = []
+    for prov in providers:
+        info = mapping.get(prov) if isinstance(mapping, dict) else None
+        if info and info.get("status") not in (None, "live", "staging"):
+            continue
+        pmid = (info or {}).get("providerId") or repo
+        if prov == "hf-inference":
+            routes.append(("hf-inference", f"/hf-inference/models/{pmid}", pmid))
+        elif prov == "fal-ai":
+            if repo == "black-forest-labs/FLUX.1-schnell" and pmid == repo:
+                pmid = "fal-ai/flux/schnell"
+            routes.append(("fal-ai", f"/fal-ai/{pmid}", pmid))
+        elif prov in ("together", "fireworks-ai", "nebius", "hyperbolic"):
+            routes.append(("openai", f"/{prov}/v1/images/generations", pmid))
+
+    # Fallback se a consulta ao Hub falhar ou vier vazia
+    if not routes:
+        if repo == "black-forest-labs/FLUX.1-schnell":
+            routes.append(("fal-ai", "/fal-ai/fal-ai/flux/schnell", "fal-ai/flux/schnell"))
+        routes.append(("hf-inference", f"/hf-inference/models/{repo}", repo))
+    return routes
+
+
 def _huggingface(opts):
-    model = (opts.get("model") or "black-forest-labs/FLUX.1-schnell").strip()
+    raw_model = (opts.get("model") or "black-forest-labs/FLUX.1-schnell").strip()
+    repo, sep, forced_prov = raw_model.partition(":")
+    repo = repo.strip()
+    forced_prov = forced_prov.strip() if sep else None
     w, h = _aspect_dims(opts)
 
     def run(pid, headers):
-        base = router.PROVIDERS[pid]["base"].rstrip("/")
-        h_req = dict(headers)
-        h_req["Content-Type"] = "application/json"
-        h_req["Accept"] = "image/png"
-        payload = json.dumps({"inputs": opts["prompt"], "parameters": {"width": w, "height": h}}).encode("utf-8")
-        _, raw = _http_raw("POST", f"{base}/{model}", h_req, payload, timeout=120)
-        if not _ext_of(raw):
-            raise ImageError("Hugging Face respondeu, mas sem imagem reconhecível.")
-        return [(raw, model.split("/")[-1])]
+        root = _hf_router_root(router.PROVIDERS[pid]["base"])
+        routes = _hf_discover_routes(repo, forced_prov)
+        last_err = None
+        label = repo.split("/")[-1]
+        for kind, path, pmid in routes:
+            url = f"{root}{path}"
+            try:
+                if kind == "hf-inference":
+                    h_req = dict(headers)
+                    h_req["Content-Type"] = "application/json"
+                    h_req["Accept"] = "image/png"
+                    payload = json.dumps({"inputs": opts["prompt"], "parameters": {"width": w, "height": h}}).encode("utf-8")
+                    _, raw = _http_raw("POST", url, h_req, payload, timeout=120)
+                    if not _ext_of(raw):
+                        raise ImageError("Hugging Face respondeu, mas sem imagem reconhecível.")
+                    return [(raw, label)]
+                if kind == "fal-ai":
+                    _, res = _http("POST", url, headers, {
+                        "prompt": opts["prompt"],
+                        "image_size": {"width": w, "height": h},
+                    }, timeout=120)
+                    imgs = []
+                    for item in res.get("images") or []:
+                        if item.get("url"):
+                            u = item["url"]
+                            raw = _decode_b64(u) if u.startswith("data:") else _download(u)
+                            if raw:
+                                imgs.append((raw, label))
+                    if not imgs:
+                        imgs = [(raw, label) for raw, _ in _extract_images(res, label)]
+                    if imgs:
+                        return imgs
+                    raise ImageError("Hugging Face (fal-ai) não devolveu imagem.")
+                # Rotas compatíveis com OpenAI /v1/images/generations no HF Router
+                _, res = _http("POST", url, headers, {
+                    "model": pmid,
+                    "prompt": opts["prompt"],
+                    "width": w,
+                    "height": h,
+                    "response_format": "b64_json",
+                }, timeout=120)
+                imgs = []
+                for item in res.get("data") or []:
+                    if item.get("b64_json"):
+                        raw = _decode_b64(item["b64_json"])
+                        if raw:
+                            imgs.append((raw, label))
+                    elif item.get("url"):
+                        imgs.append((_download(item["url"]), label))
+                if imgs:
+                    return imgs
+                raise ImageError("Hugging Face não devolveu imagem.")
+            except _Retryable as e:
+                if e.code == 402:
+                    raise _Retryable(
+                        402,
+                        "Cota gratuita mensal de Inference Providers do Hugging Face esgotada (402 — exige créditos pré-pagos ou conta PRO na HF).",
+                        e.headers,
+                    )
+                raise
+            except ImageError as e:
+                last_err = str(e)
+                if any(c in last_err for c in ("Erro 404", "Erro 410")):
+                    continue
+                raise
+        raise ImageError(last_err or "Modelo indisponível nos Inference Providers do Hugging Face.")
 
     return _with_keys("huggingface", run)
 

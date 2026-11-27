@@ -198,11 +198,13 @@ PROVIDERS.update({
     },
     "huggingface": {
         "label": "Hugging Face (FLUX.1-schnell)",
-        "base": "https://router.huggingface.co/hf-inference/models",
+        "base": "https://router.huggingface.co",
+        "validate_url": "https://huggingface.co/api/whoami-v2",
         "key_env": "HF_TOKEN",
         "key_url": "https://huggingface.co/settings/tokens",
+        "key_hint": "Token hf_... com permissão 'Make calls to Inference Providers' (cota grátis da HF é limitada a ~$0.10/mês)",
         "kind": "image",
-        "free": True,
+        "free": False,
     },
     "together": {
         "label": "Together AI (imagens Flux)",
@@ -216,8 +218,10 @@ PROVIDERS.update({
     "fal": {
         "label": "Fal.ai (Flux rápido)",
         "base": "https://fal.run",
+        "validate_url": "https://api.fal.ai/v1/models?limit=1",
         "key_env": "FAL_KEY",
         "key_url": "https://fal.ai/dashboard/keys",
+        "key_hint": "Cole no formato ID:SEGREDO (a chave completa só aparece uma vez ao criar em fal.ai/dashboard/keys)",
         "auth": "key",
         "kind": "image",
         "free": False,
@@ -706,9 +710,10 @@ def mask_key(val):
 
 
 def validate_key(pid, key, timeout=15):
-    """Testa a chave listando os modelos do provedor. Retorna (ok, mensagem)."""
+    """Testa a chave listando os modelos (ou endpoint de conta) do provedor. Retorna (ok, mensagem)."""
     cfg = PROVIDERS[pid]
-    req = urllib.request.Request(cfg["base"] + cfg.get("validate_path", "/models"), headers=auth_headers(pid, key))
+    url = cfg.get("validate_url") or (cfg["base"] + cfg.get("validate_path", "/models"))
+    req = urllib.request.Request(url, headers=auth_headers(pid, key))
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             resp.read()
@@ -737,8 +742,8 @@ def set_key(pid, key, validate=True):
         return False, "Chave vazia."
     if any(c.isspace() for c in key) or len(key) < 10:
         return False, "Isso não parece uma chave de API."
-    if PROVIDERS[pid].get("auth") == "basic" and ":" not in key:
-        return False, PROVIDERS[pid].get("key_hint") or "Formato esperado: CHAVE:SEGREDO"
+    if PROVIDERS[pid].get("auth") in ("basic", "key") and ":" not in key:
+        return False, PROVIDERS[pid].get("key_hint") or "Formato esperado: ID:SEGREDO (com dois-pontos ':')"
     msg = "Chave salva."
     if validate:
         ok, msg = validate_key(pid, key)
@@ -1205,8 +1210,11 @@ def unavailable_reason(pid, ps=None):
         if not provider_key(pid):
             return "desativado (rode bat\\Instalar_SD_Local_IA.bat)"
         return None if sd_local.installed() else "não instalado (rode bat\\Instalar_SD_Local_IA.bat)"
-    if not provider_key(pid):
+    key = provider_key(pid)
+    if not key:
         return "desativado (rode o instalador do Ollama)" if PROVIDERS[pid].get("local") else "sem chave"
+    if PROVIDERS[pid].get("auth") in ("basic", "key") and ":" not in key:
+        return "chave incompleta — precisa ser ID:SEGREDO (clique em Trocar chave)"
     if PROVIDERS[pid].get("local") and not _local_server_up(PROVIDERS[pid]["base"]):
         return "Ollama não está rodando (abra o app Ollama)"
     if PROVIDERS[pid].get("custom") and not _local_server_up(PROVIDERS[pid]["base"]):
@@ -1263,6 +1271,9 @@ def demo_status():
     }
 
 
+IMAGE_SHARED_OWNERS = {"gemini_image": "gemini", "openai_image": "openai"}
+
+
 def model_availability(models):
     """Para cada nome de modelo das listas do painel: o provedor dono e se ele deve aparecer.
     'auto' e outros sem dono aparecem se houver pelo menos um provedor de texto utilizável."""
@@ -1271,7 +1282,9 @@ def model_availability(models):
     out = {}
     for m in models:
         m = str(m or "")
-        if m in IMAGE_PROVIDERS or (m in PROVIDERS and PROVIDERS[m].get("kind") == "image"):
+        if m in IMAGE_SHARED_OWNERS:
+            pid = IMAGE_SHARED_OWNERS[m]
+        elif m in IMAGE_PROVIDERS or (m in PROVIDERS and PROVIDERS[m].get("kind") == "image"):
             pid = m
         elif m.startswith("auto"):
             pid = None
