@@ -1161,6 +1161,52 @@ def unavailable_reason(pid, ps=None):
     return None
 
 
+LONG_WAIT = 3600  # esperas de 1 h ou mais = chave recusada, sem saldo ou limite do dia
+
+
+def usable(pid):
+    """(aparece nas listas?, em espera curta?, motivo). Some: sem chave, desligado/removido, motor local
+    parado/não instalado, chave recusada/sem saldo/limite do dia. Fica (marcado): espera curta de limite por minuto."""
+    insts = instances_of(pid) if pid in PROVIDERS else []
+    if not insts:
+        return False, False, "desconhecido"
+    reasons = []
+    for i in insts:
+        reason = unavailable_reason(i)
+        if reason is None:
+            return True, False, None
+        reasons.append(reason)
+        cfg = PROVIDERS[i]
+        if cfg.get("user_hidden") or cfg.get("user_disabled") or (not provider_key(i) and i != "pollinations"):
+            continue
+        wait = _get(i).get("cooldown_until", 0) - time.time()
+        if 0 < wait < LONG_WAIT:
+            return True, True, reason
+    return False, False, reasons[0]
+
+
+def model_availability(models):
+    """Para cada nome de modelo das listas do painel: o provedor dono e se ele deve aparecer.
+    'auto' e outros sem dono aparecem se houver pelo menos um provedor de texto utilizável."""
+    load_env()
+    text_ok = any(usable(b)[0] for b in provider_order(with_instances=False))
+    out = {}
+    for m in models:
+        m = str(m or "")
+        if m in IMAGE_PROVIDERS or (m in PROVIDERS and PROVIDERS[m].get("kind") == "image"):
+            pid = m
+        elif m.startswith("auto"):
+            pid = None
+        else:
+            pid = native_provider(m)
+        if pid is None:
+            out[m] = {"provider": None, "show": text_ok, "waiting": False, "reason": None if text_ok else "nenhum provedor ativo"}
+            continue
+        show, waiting, reason = usable(pid)
+        out[m] = {"provider": pid, "show": show, "waiting": waiting, "reason": reason}
+    return out
+
+
 def reset(pid=None):
     with _lock:
         state = _load_state()

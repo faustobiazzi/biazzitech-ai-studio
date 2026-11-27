@@ -8,7 +8,10 @@ const PRESETS = {
   free: "Você é um assistente técnico e criativo prestativo. Responda em português."
 };
 
-let history = [];
+let currentConv = null;     // id da conversa aberta (null = nova, criada no 1º envio)
+let convEditable = true;
+let convData = null;
+let chatDisplay = '';
 
 function switchTab(name, btn) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
@@ -18,15 +21,251 @@ function switchTab(name, btn) {
   if (name === 'image') loadGallery();
 }
 
-function clearChat() {
-  history = [];
-  document.getElementById('chat-messages').innerHTML = '';
+// ================= CONVERSAS (guardadas no servidor, com memória) =================
+async function convPost(body) {
+  const r = await fetch('/api/conversations', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                body: JSON.stringify(body) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || !d.ok) throw new Error(d.message || ('HTTP ' + r.status));
+  return d.result;
 }
 
-function addMessage(role, text, metaLabel) {
+async function loadConversations(selectId) {
+  const sel = document.getElementById('conv-select');
+  if (!sel) return;
+  const all = document.getElementById('conv-all').checked;
+  let d;
+  try { d = await (await fetch('/api/conversations' + (all ? '?all=1' : ''))).json(); } catch (e) { return; }
+  if (!d.ok) return;
+  convPrefs = d.prefs || {};
+  document.getElementById('opt-ai-confirm').checked = !!convPrefs.ai_confirm;
+  document.getElementById('opt-partial').checked = !!convPrefs.partial_reset;
+  document.getElementById('conv-all-wrap').style.display = d.is_admin ? '' : 'none';
+  sel.innerHTML = '';
+  const mk = (c, label) => { const o = el('option', null, label); o.value = c.id; return o; };
+  const fresh = el('option', null, '(nova conversa)'); fresh.value = ''; sel.appendChild(fresh);
+  const mineKeys = d.mine || [d.me];
+  const when = ts => { const t = new Date((ts || 0) * 1000); return t.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) + ' ' + t.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }); };
+  const mine = d.conversations.filter(c => mineKeys.includes(c.owner));
+  const others = d.conversations.filter(c => !mineKeys.includes(c.owner));
+  mine.forEach(c => sel.appendChild(mk(c, when(c.updated) + ' · ' + c.title + ' · ' + c.messages + ' msg' +
+                                          (c.owner !== d.me ? ' (feita neste PC sem login)' : ''))));
+  if (others.length) {
+    const g = el('optgroup'); g.label = 'De outros usuários (só leitura)';
+    others.forEach(c => g.appendChild(mk(c, '[' + c.owner + '] ' + when(c.updated) + ' · ' + c.title + ' · ' + c.messages + ' msg')));
+    sel.appendChild(g);
+  }
+  const want = selectId !== undefined ? selectId : currentConv;
+  if (want && [...sel.options].some(o => o.value === want)) sel.value = want;
+  else if (selectId === undefined && currentConv === null && mine.length) { sel.value = mine[0].id; return openConversation(mine[0].id); }
+  else sel.value = '';
+}
+
+function renderWelcome() {
+  const box = document.getElementById('chat-messages');
+  box.innerHTML = '';
+  addMessage('assistant', 'Conversa nova. Ela fica guardada no servidor (só você e os administradores veem). ' +
+             'Quando ela crescer, a IA resume o que importa na 🧠 Memória e as mensagens antigas saem do contexto.', 'Sistema Local');
+}
+
+function setConvEditable(editable, owner) {
+  convEditable = editable;
+  const ro = document.getElementById('conv-readonly');
+  ro.style.display = editable ? 'none' : '';
+  ro.textContent = editable ? '' : '👁 Conversa de ' + owner + ' (só leitura: administradores podem ver, mas não escrever nela).';
+  document.getElementById('chat-input').disabled = !editable;
+  document.getElementById('chat-send').disabled = !editable;
+}
+
+async function openConversation(id) {
+  currentConv = id || null;
+  convData = null;
+  if (!id) { renderWelcome(); setConvEditable(true); fillMemory(); return; }
+  try {
+    const d = await (await fetch('/api/conversations/' + encodeURIComponent(id))).json();
+    if (!d.ok) throw new Error(d.message);
+    convData = d.conversation;
+  } catch (e) { alert('Não deu para abrir a conversa: ' + e.message); return; }
+  const box = document.getElementById('chat-messages');
+  box.innerHTML = '';
+  const upto = convData.summarized_upto || 0;
+  convData.messages.forEach((m, i) => {
+    if (i === upto && upto > 0) box.appendChild(el('div', 'ref-name', '— acima: já resumido na 🧠 Memória (fora do contexto) —'));
+    addMessage(m.role, m.display || m.content, m.role === 'assistant' ? 'Modelo: ' + (m.provider ? m.provider + ' / ' : '') + (m.model || '') : undefined, i);
+  });
+  if (!convData.messages.length) renderWelcome();
+  document.getElementById('chat-preset').value = convData.preset && PRESETS[convData.preset] ? convData.preset : 'free';
+  setConvEditable(convData.can_edit, convData.owner);
+  fillMemory();
+  box.scrollTop = box.scrollHeight;
+}
+
+function fillMemory() {
+  const info = document.getElementById('conv-info');
+  const ta = document.getElementById('conv-memory-text');
+  if (!convData) { ta.value = ''; info.textContent = '(a conversa é criada na 1ª mensagem)'; renderAnchors(); renderPinsAndUndo(); return; }
+  ta.value = convData.memory || '';
+  ta.readOnly = !convData.can_edit;
+  renderAnchors();
+  renderPinsAndUndo();
+  const i = convData.info || {};
+  info.textContent = i.messages + ' mensagens · ' + Math.round((i.context_chars || 0) / 1000) + ' mil caracteres no contexto · ' +
+                     (i.compactions || 0) + ' compactação(ões)';
+}
+
+// Contexto inicial: as primeiras perguntas do assunto, guardadas para resgatar se a IA perder o fio
+function renderAnchors() {
+  const box = document.getElementById('conv-anchors');
+  box.innerHTML = '';
+  const list = (convData && convData.anchors) || [];
+  const head = el('div', 'assist-row');
+  head.appendChild(el('strong', null, convData && convData.context_reset ? '📌 Contexto vigente (redefinido por você)' : '📌 Contexto inicial (consulta)'));
+  head.appendChild(el('span', 'ref-name', convData && convData.context_reset
+    ? 'vai junto em toda resposta; o que conflitar com ele não vale mais.'
+    : 'não vai em toda resposta: é resgatado quando você diz que a IA esqueceu/perdeu o contexto. ' +
+      'Para trocar, diga algo como "o contexto mudou: agora é...".'));
+  box.appendChild(head);
+  if (!list.length) { box.appendChild(el('div', 'ref-name', 'Vazio: as primeiras perguntas da conversa (3 a 10, do mesmo assunto) aparecem aqui.')); return; }
+  list.forEach((a, i) => {
+    const row = el('div', 'anchor-row');
+    row.appendChild(el('span', null, (i + 1) + '. ' + (a.text.length > 220 ? a.text.slice(0, 220) + '…' : a.text)));
+    if (convData.can_edit) {
+      const x = el('button', 'mini-btn', '×'); x.title = 'Tirar do contexto inicial';
+      x.onclick = async () => { try { await convPost({ action: 'anchor_remove', id: currentConv, index: i }); await openConversation(currentConv); document.getElementById('conv-memory').style.display = ''; } catch (e) { alert(e.message); } };
+      row.appendChild(x);
+    }
+    box.appendChild(row);
+  });
+}
+
+let convPrefs = {};
+
+async function saveConvPrefs() {
+  try {
+    const r = await convPost({ action: 'prefs', ai_confirm: document.getElementById('opt-ai-confirm').checked,
+                               partial_reset: document.getElementById('opt-partial').checked });
+    convPrefs = r.prefs || {};
+    setStatus('Opções com IA salvas' + (convPrefs.ai_confirm || convPrefs.partial_reset ? ' (gastam consulta extra quando usadas).' : '.'));
+  } catch (e) { alert(e.message); }
+}
+
+async function togglePin(index) {
+  if (!currentConv) return;
+  const box = document.getElementById('chat-messages');
+  const pos = box.scrollTop;
+  try { await convPost({ action: 'pin', id: currentConv, index }); await openConversation(currentConv); box.scrollTop = pos; }
+  catch (e) { alert(e.message); }
+}
+
+// Aviso logo depois de uma redefinição de contexto, com o que saiu e o botão de desfazer
+function showUndo(removed) {
+  const bar = document.getElementById('chat-messages');
+  const n = el('div', 'policy-warn undo-bar');
+  n.appendChild(el('div', null, '📌 Entendi como mudança de contexto.' +
+    (removed.length ? ' Saiu do contexto: ' + removed.map(t => '“' + (t.length > 80 ? t.slice(0, 80) + '…' : t) + '”').join('; ') : '')));
+  const b = el('button', 'mini-btn key-save', '↩ Desfazer (não era mudança de contexto)');
+  b.onclick = () => undoReset();
+  n.appendChild(b);
+  bar.appendChild(n);
+  bar.scrollTop = bar.scrollHeight;
+}
+
+async function undoReset() {
+  try {
+    await convPost({ action: 'undo_reset', id: currentConv });
+    await openConversation(currentConv);
+    setStatus('↩ Redefinição desfeita: o contexto e a memória voltaram como estavam.');
+  } catch (e) { alert(e.message); }
+}
+
+function renderPinsAndUndo() {
+  const pinsBox = document.getElementById('conv-pins');
+  const undoBox = document.getElementById('conv-undo');
+  pinsBox.innerHTML = '';
+  undoBox.style.display = 'none';
+  if (!convData) return;
+  if (convData.undo && convData.can_edit) {
+    undoBox.style.display = '';
+    undoBox.innerHTML = '';
+    undoBox.appendChild(el('span', null, 'A última redefinição de contexto pode ser desfeita. '));
+    const b = el('button', 'mini-btn', '↩ Desfazer redefinição'); b.onclick = () => undoReset();
+    undoBox.appendChild(b);
+  }
+  const pins = convData.pins || [];
+  const head = el('div', 'assist-row');
+  head.appendChild(el('strong', null, '📌 Mensagens fixadas'));
+  head.appendChild(el('span', 'ref-name', pins.length ? 'vão em toda resposta.' : 'nenhuma: use o 📌 de qualquer mensagem.'));
+  pinsBox.appendChild(head);
+  pins.forEach(i => {
+    const m = convData.messages[i];
+    if (!m) return;
+    const t = m.display || m.content || '';
+    const row = el('div', 'anchor-row');
+    row.appendChild(el('span', null, (m.role === 'user' ? 'Você: ' : 'IA: ') + (t.length > 200 ? t.slice(0, 200) + '…' : t)));
+    if (convData.can_edit) { const x = el('button', 'mini-btn', '×'); x.title = 'Desafixar'; x.onclick = () => togglePin(i); row.appendChild(x); }
+    pinsBox.appendChild(row);
+  });
+}
+
+function toggleMemory() {
+  const p = document.getElementById('conv-memory');
+  p.style.display = p.style.display === 'none' ? '' : 'none';
+  fillMemory();
+}
+
+function newConversation() {
+  document.getElementById('conv-select').value = '';
+  openConversation('');
+}
+
+async function saveMemory() {
+  if (!currentConv) { alert('Mande a primeira mensagem para criar a conversa.'); return; }
+  try {
+    await convPost({ action: 'memory', id: currentConv, memory: document.getElementById('conv-memory-text').value });
+    await openConversation(currentConv);
+    setStatus('Memória salva.');
+  } catch (e) { alert(e.message); }
+}
+
+async function compactConversation(btn) {
+  if (!currentConv) return;
+  btn.disabled = true;
+  setStatus('Compactando: a IA está resumindo as mensagens antigas na memória...');
+  try {
+    const r = await convPost({ action: 'compact', id: currentConv, model: document.getElementById('chat-model').value });
+    await openConversation(currentConv);
+    document.getElementById('conv-memory').style.display = '';
+    setStatus(r.summarized + ' mensagem(ns) resumida(s) na memória.');
+  } catch (e) { alert(e.message); setStatus('Compactação não feita.'); } finally { btn.disabled = false; }
+}
+
+async function clearChat() {
+  if (!currentConv) { renderWelcome(); return; }
+  if (!convEditable) return;
+  if (!confirm('Limpar esta conversa? Apaga as mensagens e a memória (o nome continua).')) return;
+  try { await convPost({ action: 'clear', id: currentConv }); await openConversation(currentConv); loadConversations(); setStatus('Conversa limpa.'); }
+  catch (e) { alert(e.message); }
+}
+
+async function deleteConversation() {
+  if (!currentConv) return;
+  if (!confirm('Apagar esta conversa de vez?')) return;
+  try { await convPost({ action: 'delete', id: currentConv }); currentConv = null; renderWelcome(); await loadConversations(''); setStatus('Conversa apagada.'); }
+  catch (e) { alert(e.message); }
+}
+
+function addMessage(role, text, metaLabel, index) {
   const box = document.getElementById('chat-messages');
   const div = document.createElement('div');
   div.className = 'msg ' + role;
+  if (index !== undefined && convData && convData.can_edit) {
+    const pinned = (convData.pins || []).includes(index);
+    if (pinned) div.classList.add('pinned');
+    const pin = el('button', 'pin-btn' + (pinned ? ' on' : ''), '📌');
+    pin.title = pinned ? 'Desafixar' : 'Fixar: esta mensagem vai junto em toda resposta, mesmo depois de compactar';
+    pin.onclick = () => togglePin(index);
+    div.appendChild(pin);
+  }
 
   if (role === 'assistant') {
     const meta = document.createElement('div');
@@ -169,7 +408,9 @@ async function sendChat() {
   input.value = '';
   // Anexos viram material de referência dentro da mensagem
   let content = prompt;
+  chatDisplay = prompt;
   if (chatAttachments.length) {
+    chatDisplay = prompt + '\n📎 ' + chatAttachments.map(a => a.name).join(', ');
     content = 'Material de referência anexado (use como base):\n\n' +
       chatAttachments.map(a => '### Arquivo: ' + a.name + '\n"""\n' + a.text + '\n"""').join('\n\n') +
       '\n\n---\nPedido: ' + prompt;
@@ -179,35 +420,44 @@ async function sendChat() {
   } else {
     addMessage('user', prompt);
   }
-  history.push({ role: 'user', content });
+  const display = chatDisplay;
 
   btn.disabled = true;
   const signal = beginTask('chat');
   document.getElementById('status-txt').textContent = 'Consultando ' + model + '...';
 
   try {
-    const messages = [{ role: 'system', content: sysPrompt }, ...history.slice(-10)];
-    const resp = await fetch('/v1/chat/completions', {
+    const resp = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, messages, temperature: 0.7 }),
+      body: JSON.stringify({ conversation_id: currentConv, content, display, model, system: sysPrompt,
+                             preset: presetKey, temperature: 0.7 }),
       signal
     });
-    const data = await resp.json();
-    if (!resp.ok || data.error) {
-      throw new Error(data.error?.message || ('HTTP ' + resp.status));
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.ok) {
+      throw new Error(data.message || ('HTTP ' + resp.status));
     }
-    const msg = data.choices?.[0]?.message || {};
-    const reply = msg.content || '(Sem conteúdo)';
+    const reply = data.reply || '(Sem conteúdo)';
     const usedModel = data.model || model;
     const prov = data.provider ? data.provider + ' / ' : '';
-    history.push({ role: 'assistant', content: reply });
-    addMessage('assistant', reply, 'Modelo: ' + prov + usedModel);
-    document.getElementById('status-txt').textContent = 'Resposta recebida (' + prov + usedModel + ')';
+    const wasNew = !currentConv;
+    currentConv = data.conversation_id;
+    await openConversation(currentConv);
+    if (data.can_undo) showUndo(data.removed_anchors || []);
+    const rs = data.rescue || {};
+    document.getElementById('status-txt').textContent = 'Resposta recebida (' + prov + usedModel + ')' +
+      (data.intent === 'rescue' ? ' — 🔎 resgatei o contexto do início (' + (rs.anchors || 0) + ' pedido(s) iniciais, ' + (rs.snippets || 0) + ' trecho(s) antigos).' : '') +
+      (data.intent === 'reset' ? ' — 📌 contexto redefinido: o anterior saiu e a memória está sendo reescrita.' : '') +
+      (data.compacting ? ' — a conversa cresceu: compactando a memória em segundo plano.' : '') +
+      (data.extra_calls ? ' (+' + data.extra_calls + ' consulta(s) extra da IA)' : '') +
+      (data.question ? ' — 💡 respondi com uma pergunta sobre as opções com IA.' : '');
+    if (data.intent === 'reset' || data.intent === 'rescue') setTimeout(() => { if (currentConv === data.conversation_id) fetch('/api/conversations/' + currentConv).then(r => r.json()).then(d => { if (d.ok) { convData = d.conversation; fillMemory(); } }); }, data.intent === 'reset' ? 15000 : 500);
+    if (wasNew || data.compacting) loadConversations(currentConv);
+    if (data.compacting) setTimeout(() => { if (currentConv === data.conversation_id) fetch('/api/conversations/' + currentConv).then(r => r.json()).then(d => { if (d.ok) { convData = d.conversation; fillMemory(); } }); }, 20000);
     refreshKeys();
   } catch (err) {
     if (isAbort(err)) {
-      if (history.length && history[history.length - 1].role === 'user') history.pop();
       if (!input.value.trim()) input.value = prompt;
       setStatus('⏹ Pedido cancelado (texto devolvido para a caixa).');
     } else {
@@ -294,6 +544,7 @@ function buildImageCard(data, prompt) {
   img.addEventListener('load', () => {
     if (!data.width) footer.firstChild.textContent = data.model + ` (${img.naturalWidth}x${img.naturalHeight})`;
   });
+  if (galleryAdmin) footer.appendChild(el('span', 'ref-name', '👤 ' + (data.owner ? (data.owner === galleryMe ? 'você' : data.owner) : 'sem dono (imagem antiga)')));
   footer.appendChild(el('span', null, 'Salvo em: ' + data.saved_path));
 
   const actions = el('div', 'img-actions');
@@ -391,6 +642,8 @@ function prependGalleryCard(im, prompt) {
 }
 
 let _loadingGallery = false;
+let galleryAdmin = false, galleryMe = '';
+
 async function loadGallery(notify) {
   if (_loadingGallery) return;
   _loadingGallery = true;
@@ -400,7 +653,11 @@ async function loadGallery(notify) {
     const d = await r.json();
     const gal = document.getElementById('image-gallery');
     if (!gal) return;
-    const list = d.images || [];
+    galleryAdmin = !!d.is_admin; galleryMe = d.me || '';
+    const filt = document.getElementById('gallery-owner');
+    if (filt) filt.style.display = galleryAdmin ? '' : 'none';
+    const onlyMine = filt && filt.value === 'mine';
+    const list = (d.images || []).filter(im => !onlyMine || im.owner === galleryMe);
     const diskMap = new Map(list.map(im => [im.file_name, im]));
     // Remove cartões de imagens que foram apagadas no disco
     [...gal.querySelectorAll('.img-card')].forEach(c => {
@@ -491,6 +748,7 @@ async function fixImagePrompt(d, btn) {
                              model: document.getElementById('assist-model').value }), signal });
     const f = await r.json().catch(() => ({}));
     if (!r.ok || !f.ok) throw new Error(f.message || ('HTTP ' + r.status));
+    showAssistWarning(f);
     await applySettings(d);
     if (document.getElementById('assist-on').checked) { document.getElementById('assist-on').checked = false; onAssistToggle(); }
     const full = f.prompt + (f.negative ? '\nAvoid: ' + f.negative : '');
@@ -542,6 +800,8 @@ async function assistSinglePrompt() {
                              characters: [...selectedChars], auto_characters: true }), signal });
     const d = await resp.json().catch(() => ({}));
     if (!resp.ok || !d.ok) throw new Error(d.message || ('HTTP ' + resp.status));
+    showAssistWarning(d);
+    if (refs.length && d.images_used) refsInPrompt = refsKey();
     if (d.kind === 'panels') {
       currentPlan = d;
       currentPlan.instruction = instruction;
@@ -593,6 +853,7 @@ async function planPanels() {
                              characters: [...selectedChars], auto_characters: true }), signal });
     const d = await resp.json().catch(() => ({}));
     if (!resp.ok || !d.ok) throw new Error(d.message || ('HTTP ' + resp.status));
+    showAssistWarning(d);
     currentPlan = d;
     currentPlan.instruction = instruction;
     renderPlan();
@@ -782,6 +1043,11 @@ async function requestImages(req, signal) {
 // ----- imagens de referência (até 6): a 1ª vai para PixelLab/Retro Diffusion, todas para o auxiliar
 const MAX_REFS = 6;
 let refs = [];  // {data, name (arquivo da galeria ou null), label}
+let refsInPrompt = '';  // assinatura das referências já usadas pelo auxiliar no prompt da caixa
+const refsKey = () => refs.map(r => r.name || r.data.slice(-40)).join('|');
+// geradores que recebem a imagem de referência (os outros só usam o texto do prompt)
+const usesReference = p => p !== 'pollinations';
+function showAssistWarning(d) { if (d && d.warning) alert('Atenção: ' + d.warning); }
 const REF_EMPTY = 'nenhuma (até 6 — a 1ª vai para PixelLab/Retro Diffusion; todas vão para o auxiliar)';
 
 function renderRefs() {
@@ -1092,7 +1358,14 @@ async function generateImage(opts) {
 
   const req = withCharacterLoras(currentImageRequest(prompt));
   const provider = req.provider;
-  if (provider === 'pollinations' && refs.length) setStatus('Aviso: o Flux/Pollinations não usa imagem de referência (use o Auxiliar de prompt para descrever os personagens).');
+  if (!opts.direct && refs.length && !usesReference(provider) && refsInPrompt !== refsKey()) {
+    const ok = confirm('O Flux/Pollinations não recebe a imagem de referência: ele só lê o texto do prompt.\n\n' +
+                       'OK = o auxiliar olha a(s) ' + refs.length + ' referência(s) e reescreve o prompt descrevendo o ' +
+                       'personagem/estilo (depois é só clicar em Gerar Arte).\n' +
+                       'Cancelar = gerar agora só com o texto.\n\n' +
+                       'Para usar a imagem de verdade, escolha o Stable Diffusion local, PixelLab ou Retro Diffusion.');
+    if (ok) return assistSinglePrompt();
+  }
 
   btn.disabled = true;
   const signal = beginTask('img', { provider });
@@ -1443,9 +1716,6 @@ function refreshModelMenus() {
       const o = el('option', null, '★ ' + p.label + ' (Stable Diffusion de outro PC)');
       o.value = p.id; o.dataset.custom = '1'; imgSel.appendChild(o);
     });
-    // geradores padrão removidos/desligados por você somem da lista
-    const off = new Set((lastProvidersData.providers || []).filter(p => p.hidden || p.disabled).map(p => p.id));
-    [...imgSel.options].forEach(o => { if (!o.dataset.custom && o.value !== 'pollinations') o.hidden = off.has(o.value); });
     if ([...imgSel.options].some(o => o.value === cur)) imgSel.value = cur;
   }
   [['chat-model', ''], ['assist-model', 'vision-or-text']].forEach(([id]) => {
@@ -1458,6 +1728,35 @@ function refreshModelMenus() {
       o.dataset.custom = '1';
       sel.appendChild(o);
     });
+  });
+  filterModelMenus();
+}
+
+// Mostra nas listas só os modelos/geradores com chave funcionando e ativos (os em espera curta ficam marcados)
+async function filterModelMenus() {
+  const ids = ['chat-model', 'assist-model', 'img-provider'];
+  const sels = ids.map(id => document.getElementById(id)).filter(Boolean);
+  const values = [...new Set(sels.flatMap(sel => [...sel.options].map(o => o.value)).filter(v => v && v !== 'pollinations'))];
+  let av = {};
+  try {
+    const r = await fetch('/api/models/availability?' + values.map(v => 'm=' + encodeURIComponent(v)).join('&'));
+    av = (await r.json()).models || {};
+  } catch (e) { return; }  // sem resposta: deixa as listas como estão
+  sels.forEach(sel => {
+    let selectedHidden = false;
+    [...sel.options].forEach(o => {
+      if (o.dataset.label === undefined) o.dataset.label = o.textContent;
+      const a = av[o.value];
+      if (!a) { o.hidden = false; o.disabled = false; return; }
+      o.hidden = o.disabled = !a.show;
+      o.textContent = o.dataset.label + (a.show && a.waiting ? ' — em espera' : '');
+      o.title = a.reason || '';
+      if (!a.show && o.selected) selectedHidden = true;
+    });
+    if (selectedHidden) {
+      const first = [...sel.options].find(o => !o.hidden);
+      if (first) { sel.value = first.value; sel.dispatchEvent(new Event('change')); }
+    }
   });
 }
 
@@ -2302,6 +2601,7 @@ async function loadMe() {
     const first = [...document.querySelectorAll('.tab-btn[data-tab]')].find(b => b.style.display !== 'none');
     if (first) first.click();
   }
+  if (vis.chat) loadConversations();
   if (vis.image) loadGallery(false);
   if (vis.providers) { loadProviders(true); setInterval(() => loadProviders(false), 15000); }
   // ?tab=image|providers|access abre direto numa aba

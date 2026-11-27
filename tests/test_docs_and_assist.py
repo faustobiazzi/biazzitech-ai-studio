@@ -62,6 +62,27 @@ class PromptAssistTest(unittest.TestCase):
         router.load_env()
         self.assertEqual(prompt_assist.pick_model(False), "groq/openai/gpt-oss-120b")
 
+    def test_references_without_vision_model_fall_back_to_text(self):
+        write_env(GROQ_API_KEY="y")  # só modelo de texto disponível
+        router.load_env()
+        calls = []
+
+        def fake_ask(system, user_text, images, model):
+            calls.append((model, len(images), "could not be shown" in user_text))
+            if images:
+                raise prompt_assist.AssistError("modelo sem visão")
+            return '{"prompt": "knight in the rain"}', {"provider": "groq", "model": "m"}
+
+        orig, prompt_assist._ask = prompt_assist._ask, fake_ask
+        try:
+            out = prompt_assist.single("esse personagem na chuva", images=["data:image/png;base64,AA"])
+        finally:
+            prompt_assist._ask = orig
+        self.assertEqual(out["prompt"], "knight in the rain")
+        self.assertEqual(out["images_used"], 0)
+        self.assertIn("SEM olhar as imagens", out["warning"])
+        self.assertEqual(calls[-1][1:], (0, True))  # 2ª tentativa: sem imagens e avisando o modelo
+
     def test_single_prompt(self):
         seen = {}
 

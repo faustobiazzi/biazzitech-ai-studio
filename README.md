@@ -4,15 +4,24 @@ Estúdio de IA para quem cria jogos e histórias: código (Godot 4 / GDScript, L
 
 - **Roda sozinho** (precisa só de Python, ou nem isso com o `.exe`) **ou dentro do Google Antigravity** como painel lateral (Sidecar) + servidor MCP.
 - **Rodízio automático** entre Gemini, Groq, OpenRouter, Ollama Cloud, DeepSeek, ChatGPT, Claude, xAI, Ollama local e Pollinations: se um dá limite, falta de saldo ou erro, o próximo responde.
-- **Quadrinhos**: fichas de personagem reutilizáveis, 22 modelos de página (grades, dinâmicos com cortes inclinados, mistos), divisão da página descrita em texto, personagem que "vaza" do quadro e **onomatopeias** (hachurado, explosão, tremido) letreiradas na montagem.
+- **Quadrinhos**: fichas de personagem reutilizáveis, 20 modelos de página (e os seus, desenhados no Paint) (grades, dinâmicos com cortes inclinados, mistos), divisão da página descrita em texto, personagem que "vaza" do quadro e **onomatopeias** (hachurado, explosão, tremido) letreiradas na montagem.
 - **Imagens**: Flux/Pollinations e **pixel art para jogos** (PixelLab, Retro Diffusion, Scenario), com imagem de referência e animação.
 - **Godot 4**: spritesheet vira `SpriteFrames` com animações nomeadas; tileset vira `TileSet` pronto — é só copiar a pasta para o projeto.
 - **Imagens offline com LoRAs**: Stable Diffusion local leve (SD 1.5, ~1.9 GB, roda até em placa integrada) e, se a máquina aguentar, o SDXL.
+- **Conversas guardadas com memória**: cada conversa fica no servidor e volta ao recarregar; quando cresce, a IA resume o que importa e as mensagens antigas saem do contexto. O começo da conversa fica guardado para resgatar se a IA "perder o fio", e dá para fixar mensagens.
 - **Proxy compatível com OpenAI** para Continue, Cline e outras ferramentas.
 - **Usuários, senhas e acesso pela rede** (com HTTPS opcional); **porta configurável**.
 - Só usa a biblioteca padrão do Python (sem `pip`); testes automáticos a cada envio.
 
 ![Chat](docs/img/01-chat.png)
+
+> ### Novidades da 1.2.0
+> - **Conversas guardadas no servidor**, por usuário, com 🧠 **memória** (compactar, editar, limpar), **contexto inicial** resgatado quando você reclama de perda de contexto, **redefinição** quando você diz que o contexto mudou (com **desfazer**) e 📌 **mensagens fixadas**. Opcional: a IA confirma a intenção e tira só o que conflita (gasta consulta extra; o chat pergunta antes).
+> - **Usuários**: cada um vê só as próprias conversas e imagens; administradores veem as de todos.
+> - **Auxiliar de imagens**: botão **✨ Gerar prompt** (uma imagem ou um prompt por quadro), modelos de página **P&B feitos no Paint**, e referências que funcionam mesmo sem modelo que enxerga imagens.
+> - **Listas de modelos e geradores** mostram só o que tem chave funcionando e está ativo.
+> - **⏹ Cancelar** pedidos, **Reiniciar servidor** pelo painel (administrador), galeria que continua lá ao recarregar.
+> - **Assistente Livre** é o modo padrão do chat.
 
 > ### ☕ Pague um cafézinho pro dev!
 > O BiazziTech AI Studio é um projeto independente, feito com dedicação e sem anúncios. Se ele te ajudou, apoie a evolução com qualquer valor:
@@ -100,7 +109,18 @@ Outras chaves aceitas: `-DeepSeekKey`, `-PollinationsKey`, `-OpenRouterKey`, `-X
 ## 3. O painel
 
 ### Código & Lore
-Escolha o **Modelo** (ou *Automático* = rodízio) e o **Modo** (Godot 4.7 GDScript, Lua, Python, C#, Lore & Diálogos, Assistente Livre). Cada resposta mostra qual provedor/modelo respondeu.
+Escolha o **Modelo** (ou *Automático* = rodízio) e o **Modo** (Assistente Livre — o padrão —, Godot 4.7 GDScript, Lua, Python, C#, Lore & Diálogos). Cada resposta mostra qual provedor/modelo respondeu. As listas mostram só os modelos com chave funcionando e ativos (os que estão em espera curta aparecem marcados). **⏹ Cancelar** interrompe o pedido em andamento.
+
+**Conversas:** cada conversa fica guardada no servidor e volta quando você recarrega a página ou entra de outro aparelho. O seletor **Conversa** lista as suas (com data), **+ Nova** começa outra, **Limpar** apaga as mensagens e a memória, 🗑 apaga a conversa.
+
+**🧠 Memória** (botão ao lado do seletor):
+- **Memória** — quando a conversa cresce, a IA resume em segundo plano o que importa (objetivo, decisões, nomes, pendências) e as mensagens antigas saem do contexto (continuam guardadas para reler). Dá para editar à mão ou **Compactar agora**.
+- **📌 Contexto inicial** — as primeiras perguntas (3 a 10, enquanto forem do mesmo assunto) ficam guardadas à parte. Não vão em toda resposta: quando você reclama de perda de contexto (*"você esqueceu"*, *"como eu disse no início"*, *"saiu do assunto"*), elas voltam junto com os trechos antigos da conversa sobre o assunto.
+- **Redefinir** — se você disser que o contexto mudou (*"o contexto mudou: agora é..."*, *"isso não vale mais"*), a sua mensagem vira o **contexto vigente** (vai em toda resposta), a IA procura na conversa o que se liga a ele e a memória é reescrita sem o que ficou obsoleto. Aparece um aviso com o que saiu e o botão **↩ Desfazer** (para quando era, por exemplo, a fala de um personagem).
+- **📌 Fixar** — qualquer mensagem pode ser fixada (botão 📌 nela) e vai junto em toda resposta, mesmo depois de compactar.
+- **🤖 Com ajuda da IA** (opcional, cada uso gasta **1 consulta extra**): confirmar com a IA se a frase era mesmo reclamação/mudança de contexto, e na mudança tirar **só o que conflita** em vez de trocar tudo. Na primeira vez que fizer sentido o chat pergunta se você quer ativar — responda *sim*, *faça*, *do it*, *manda bala*... ou *não*; depois dá para mudar nas caixas de marcar da 🧠 Memória.
+
+A conversa do chat não muda nada no proxy `/v1` (Continue, Cline, MCP do Antigravity): ali quem manda o histórico continua sendo a ferramenta.
 
 **📎 Anexar:** `.docx`, `.md`, `.txt` e `.pdf` entram como material de referência do pedido (até 60 mil caracteres por arquivo). PDF usa a biblioteca `pypdf`: o instalador oferece instalar (ou `pip install pypdf`) e o `.exe` já vem com ela.
 
@@ -109,7 +129,7 @@ As IAs **só devolvem texto — nada é executado na sua máquina**. Quando a re
 ### Imagens
 ![Imagens](docs/img/02-imagens.png)
 
-Escolha o **Gerador** (Flux/Pollinations, PixelLab, Retro Diffusion, Scenario), o modo/estilo, o tamanho e, se quiser, uma **imagem de referência**. Cada imagem da galeria tem **Abrir**, **Compartilhar**, **Usar como referência**, **Animar**, **Reutilizar prompt**, **Corrigir**, **🎮 Godot** e **Excluir**. Detalhes na [seção 6](#6-imagens-e-pixel-art).
+Escolha o **Gerador** (Flux/Pollinations, PixelLab, Retro Diffusion, Scenario, Stable Diffusion local ou de outro PC — só aparecem os que estão ativos), o modo/estilo, o tamanho e, se quiser, uma **imagem de referência**. A galeria continua lá quando você recarrega a página: cada imagem tem um `.json` ao lado, com prompt, gerador e configurações. Cada imagem da galeria tem **Abrir**, **Compartilhar**, **Usar como referência**, **Animar**, **Reutilizar prompt**, **Corrigir**, **🎮 Godot** e **Excluir**. Detalhes na [seção 6](#6-imagens-e-pixel-art).
 
 ### Provedores
 ![Provedores](docs/img/03-provedores.png)
@@ -194,7 +214,7 @@ Campos: **nome**, **URL** (pode digitar só `host:porta`; o painel completa com 
 | **Retro Diffusion** | `RETRODIFFUSION_API_KEY` | Estilos (geral, plataforma, top-down, isométrico...), tiles, animações prontas (andar 4 direções, batalha, VFX, rotação 8 dir.), animar referência | ✔ |
 | **Scenario** | `SCENARIO_API_KEY` = `CHAVE:SEGREDO` | Qualquer modelo pelo `modelId` | ainda não |
 
-- **Referências (até 6):** *Adicionar imagens...* ou *Usar como referência* numa imagem da galeria. A 1ª vai para PixelLab/Retro Diffusion; todas vão para o auxiliar de prompt.
+- **Referências (até 6):** *Adicionar imagens...* ou *Usar como referência* numa imagem da galeria. A 1ª vai para PixelLab/Retro Diffusion/Stable Diffusion; todas vão para o auxiliar de prompt. O **Flux/Pollinations não recebe imagem**: ao gerar nele com referência, o painel oferece que o auxiliar olhe a imagem e reescreva o prompt descrevendo o personagem.
 - **Animar:** botão *Animar* em qualquer imagem (PixelLab, 8 quadros). Animações da Retro Diffusion voltam como **spritesheet PNG**.
 - Personagens em várias direções e tilesets voltam como várias imagens (uma por direção/tile).
 - Tudo é salvo em `%USERPROFILE%\.biazzitech\imagens`.
@@ -207,11 +227,11 @@ Campos: **nome**, **URL** (pode digitar só `host:porta`; o painel completa com 
 
 1. Marque **Auxiliar de prompt** na aba Imagens.
 2. Cole o **texto de referência** (ou *📎 Texto de .docx/.md/.pdf/.txt*) e adicione as **imagens dos personagens**.
-3. Escreva o pedido, por exemplo: *"página de 5 quadros estilo anime shonen dos anos 80 com os personagens das imagens; cada parágrafo é um quadro"*, e clique em **Planejar quadros**.
+3. Escreva o pedido, por exemplo: *"página de 5 quadros estilo anime shonen dos anos 80 com os personagens das imagens; cada parágrafo é um quadro"*, e clique em **Planejar quadros** — ou em **✨ Gerar prompt**: com página de vários quadros ele escreve um prompt por quadro; com um quadro só (ou sem página), escreve **um prompt de tela inteira** e coloca direto na caixa para você gerar.
 4. O auxiliar descreve o estilo e cada personagem a partir das imagens e monta **um prompt completo por quadro**, repetindo a descrição dos personagens em todos (é o que mantém a consistência, já que o gerador não tem memória). Cada quadro mostra o trecho do texto, o enquadramento, a proporção e o que evitar — tudo editável.
 5. **Gerar este** / **Gerar todos os quadros** usam o gerador escolhido lá em cima; **Montar página** junta os quadros numa página com bordas (salva na galeria).
 
-Se o modelo escolhido falhar ou devolver uma resposta quebrada, o auxiliar tenta sozinho o próximo (até 3). Pedidos com imagens só vão para provedores que enxergam imagens.
+Se o modelo escolhido falhar ou devolver uma resposta quebrada, o auxiliar tenta sozinho o próximo (até 3). Pedidos com imagens vão primeiro para provedores que enxergam imagens; se nenhum responder (sem chave, em espera ou sem cota), o prompt é escrito por um modelo de texto e o painel **avisa que as imagens não foram vistas**.
 
 ### Páginas de quadrinho: modelos, divisão e onomatopeias
 
@@ -302,6 +322,8 @@ O "Ollama das imagens": gera **no seu PC, sem internet e sem créditos**, e acei
 - Cada usuário recebe um **token** (`btk_...`) para usar no Continue/Cline no lugar da chave de API.
 - Senhas guardadas com hash + salt (PBKDF2-SHA256), nunca em texto. 5 senhas erradas bloqueiam o IP por 5 minutos.
 - Quem usa **o próprio PC do servidor** entra direto; marque *"Exigir login também neste PC"* para mudar isso.
+- **Cada usuário vê só as próprias conversas e imagens.** Administradores veem as de todos: na galeria aparece o dono de cada imagem (com o filtro *só as minhas*) e no chat a opção **de todos** lista as conversas dos outros (só leitura). As conversas feitas no próprio PC sem login contam como do administrador, que pode continuá-las logado pela rede. Imagens antigas, sem dono registrado, aparecem só para administradores.
+- **Reiniciar servidor** (aba Acesso, só administrador) aplica a troca de porta na hora.
 
 **Acesso pela rede** (aba Acesso ou `-AcessoRede sim` na instalação):
 - Só liga com **usuário cadastrado** e depois de você **confirmar que leu os riscos** (a data fica registrada). Liga/desliga **na hora**, sem reiniciar; apagar o último usuário fecha a rede sozinho.
@@ -321,7 +343,7 @@ Com `cert.pem` e `key.pem` nessa pasta e a rede ligada, o painel passa a atender
 
 **Fora de casa:** use uma VPN como o **Tailscale** (rede privada criptografada entre seus aparelhos). **Nunca** abra a porta do painel no roteador para a internet.
 
-**Porta:** escolhida na instalação ou na aba Acesso (vale no próximo início). A 8080 e portas ocupadas são recusadas. Fica em `%USERPROFILE%\.biazzitech\config.json`.
+**Porta:** escolhida na instalação ou na aba Acesso (vale ao clicar em **Reiniciar servidor** ou no próximo início). A 8080 e portas ocupadas são recusadas. Fica em `%USERPROFILE%\.biazzitech\config.json`.
 
 **Terminal:** `python access_control.py show` · `set port 9191` · `set lan true` (exige usuário) · `add-user NOME --perms chat,imagens` · `del-user NOME`
 
@@ -330,7 +352,7 @@ Com `cert.pem` e `key.pem` nessa pasta e a rede ligada, o painel passa a atender
 ## 9. Versão .exe (sem Python)
 
 1. Numa máquina **com** Python, rode `bat\Gerar_EXE.bat`. Na primeira vez ele pede para instalar o **PyInstaller**.
-2. Saída: `dist\BiazziTech AI Studio.exe` (um arquivo, ~8 MB). Copie para qualquer Windows 10/11 e dê duplo-clique.
+2. Saída: `dist\BiazziTech AI Studio.exe` (um arquivo, ~9 MB). Copie para qualquer Windows 10/11 e dê duplo-clique.
 3. Cadastre as chaves pela aba **Provedores** (ficam em `%USERPROFILE%\.env` daquele PC).
 
 O `.exe` tem o painel, o rodízio, as imagens e o controle de acesso. A integração com o Antigravity e o Ollama ficam com o instalador em PowerShell. Alguns antivírus estranham `.exe` do PyInstaller; se bloquear, libere o arquivo.
@@ -355,7 +377,8 @@ Streaming (SSE) funciona. A resposta traz o campo `provider` com quem respondeu.
 |---|---|
 | Chaves | `%USERPROFILE%\.env` |
 | App instalado | `%USERPROFILE%\.biazzitech\app` |
-| Imagens geradas | `%USERPROFILE%\.biazzitech\imagens` |
+| Imagens geradas (cada uma com um `.json` de metadados e dono) | `%USERPROFILE%\.biazzitech\imagens` |
+| Conversas do chat (memória, contexto inicial, fixadas) | `%USERPROFILE%\.biazzitech\conversas\` |
 | Porta / rede | `%USERPROFILE%\.biazzitech\config.json` |
 | Usuários | `%USERPROFILE%\.biazzitech\users.json` |
 | Provedores personalizados | `%USERPROFILE%\.biazzitech\custom_providers.json` |
@@ -379,7 +402,8 @@ Streaming (SSE) funciona. A resposta traz o campo `provider` com quem respondeu.
 | `provider_router.py` | Rodízio de provedores e chaves |
 | `image_providers.py` | PixelLab, Retro Diffusion, Scenario |
 | `access_control.py` | Porta, rede, usuários e senhas |
-| `prompt_assist.py` | Auxiliar de prompt (planejar quadros, corrigir prompts, descrever personagens) |
+| `prompt_assist.py` | Auxiliar de prompt (planejar quadros, gerar prompt, corrigir prompts, descrever personagens) |
+| `conversations.py` | Conversas do chat: memória, compactação, contexto inicial, fixar e visibilidade por usuário |
 | `characters.py` | Fichas de personagem |
 | `comic_layouts.py` | Modelos de página de quadrinho |
 | `godot_export.py` | Exportação de spritesheets/tilesets para o Godot 4 |

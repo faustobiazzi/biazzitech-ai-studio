@@ -261,6 +261,27 @@ def _ask_json(system, user_text, images, models, check):
     return None, last_info, errors + [("__raw__", last_raw)]
 
 
+IMAGES_IGNORED = ("Nenhum modelo que enxerga imagens respondeu (Gemini/OpenRouter sem chave, em espera ou sem cota), "
+                  "então o prompt foi escrito SEM olhar as imagens de referência, só pelo texto e pelas fichas.")
+NO_VISION_NOTE = ("NOTE: reference images were provided by the user but could not be shown to you. "
+                  "Rely on the text and the character sheets; do not invent details about the images.")
+
+
+def _ask_json_images(system, user_text, images, preferred, check):
+    """Como _ask_json, mas com imagens tenta primeiro os modelos que enxergam; se nenhum responder,
+    cai para os modelos de texto (sem as imagens) em vez de falhar. Devolve (data, info, errors, viu_imagens)."""
+    if not images:
+        data, info, errors = _ask_json(system, user_text, [], candidate_models(False, preferred), check)
+        return data, info, errors, False
+    data, info, errors = _ask_json(system, user_text, images, candidate_models(True, preferred), check)
+    if data is not None:
+        return data, info, errors, True
+    data2, info2, errors2 = _ask_json(system, user_text + "\n\n" + NO_VISION_NOTE, [], candidate_models(False), check)
+    if data2 is not None or any(isinstance(e, tuple) and e[1].strip() for e in errors2):
+        return data2, info2, [e for e in errors if not isinstance(e, tuple)] + errors2, False
+    return data, info, errors + errors2, True
+
+
 def _clean_sfx(items):
     out = []
     for s in items if isinstance(items, list) else []:
@@ -290,7 +311,6 @@ def plan(instruction, text="", images=None, model=None, generator="pollinations"
         for u in c.get("image_data") or []:
             if len(images) < 6:
                 images.append(u)
-    models = candidate_models(bool(images), model)
     parts = [f"REQUEST:\n{instruction.strip()}"]
     if text and text.strip():
         parts.append(f"REFERENCE TEXT:\n{text.strip()}")
@@ -314,8 +334,8 @@ def plan(instruction, text="", images=None, model=None, generator="pollinations"
         parts.append(f"SOUND EFFECTS INSTRUCTIONS (user, Portuguese):\n{sfx_text.strip()}")
     parts.append(f"SFX MODE: {'draw' if sfx_mode == 'draw' else 'overlay'}")
     parts.append(GENERATOR_HINTS.get(generator, GENERATOR_HINTS["pollinations"]))
-    data, info, errors = _ask_json(PLAN_SYSTEM, "\n\n".join(parts), images, models,
-                                   lambda d: isinstance(d.get("panels"), list) and len(d["panels"]) > 0)
+    data, info, errors, seen = _ask_json_images(PLAN_SYSTEM, "\n\n".join(parts), images, model,
+                                                lambda d: isinstance(d.get("panels"), list) and len(d["panels"]) > 0)
     if data is None:
         raw = next((e[1] for e in errors if isinstance(e, tuple)), "")
         msgs = [e for e in errors if not isinstance(e, tuple)]
@@ -349,7 +369,9 @@ def plan(instruction, text="", images=None, model=None, generator="pollinations"
     data["characters_used"] = [c.get("id") for c in chars]
     data["model"] = info.get("model")
     data["provider"] = info.get("provider")
-    data["images_used"] = len(images)
+    data["images_used"] = len(images) if seen else 0
+    if images and not seen:
+        data["warning"] = IMAGES_IGNORED
     return data
 
 
@@ -373,8 +395,8 @@ def single(instruction, text="", images=None, model=None, generator="pollination
         parts.append(f"{len(images)} reference image(s) attached: the first {user_images} from the user"
                      + (", the rest from the character sheets above." if len(images) > user_images else "."))
     parts.append(GENERATOR_HINTS.get(generator, GENERATOR_HINTS["pollinations"]))
-    data, info, errors = _ask_json(SINGLE_SYSTEM, "\n\n".join(parts), images, candidate_models(bool(images), model),
-                                   lambda d: bool((d.get("prompt") or "").strip()))
+    data, info, errors, seen = _ask_json_images(SINGLE_SYSTEM, "\n\n".join(parts), images, model,
+                                                lambda d: bool((d.get("prompt") or "").strip()))
     if data is None:
         raw = next((e[1] for e in errors if isinstance(e, tuple)), "")
         if not raw.strip():
@@ -385,7 +407,8 @@ def single(instruction, text="", images=None, model=None, generator="pollination
         data["aspect"] = "1:1"
     return {"prompt": data["prompt"].strip(), "negative": (data.get("negative") or "").strip(),
             "aspect": data["aspect"], "explanation": (data.get("explanation") or "").strip(),
-            "characters_used": [c.get("id") for c in chars], "images_used": len(images),
+            "characters_used": [c.get("id") for c in chars], "images_used": len(images) if seen else 0,
+            "warning": IMAGES_IGNORED if images and not seen else "",
             "model": info.get("model"), "provider": info.get("provider")}
 
 
@@ -398,23 +421,24 @@ def describe_character(images, name="", hint="", model=None):
     data, info, errors = _ask_json(DESCRIBE_SYSTEM, user, images[:4], candidate_models(True, model),
                                    lambda d: bool((d.get("look") or "").strip()))
     if data is None:
-        raise AssistError("O modelo não devolveu a descrição (" + "; ".join(e for e in errors if not isinstance(e, tuple))[:300] + ").")
+        raise AssistError("Nenhum modelo que enxerga imagens respondeu (" + "; ".join(e for e in errors if not isinstance(e, tuple))[:300]
+                          + "). Para descrever personagens pela imagem, cadastre a chave grátis do Gemini ou do OpenRouter.")
     return {"look": data["look"].strip(), "notes": (data.get("notes") or "").strip(),
             "model": info.get("model"), "provider": info.get("provider")}
 
 
 def fix(prompt, problem, image=None, model=None, generator="pollinations", negative=""):
-    models = candidate_models(bool(image), model)
     user = (f"ORIGINAL PROMPT:\n{prompt}\n\nORIGINAL NEGATIVE:\n{negative or '(none)'}\n\n"
             f"WHAT WENT WRONG (user, Portuguese):\n{problem}\n\n"
             f"{'The generated image is attached.' if image else 'No image attached.'}\n"
             f"{GENERATOR_HINTS.get(generator, GENERATOR_HINTS['pollinations'])}")
-    data, info, errors = _ask_json(FIX_SYSTEM, user, [image] if image else [], models,
-                                   lambda d: bool((d.get("prompt") or "").strip()))
+    data, info, errors, seen = _ask_json_images(FIX_SYSTEM, user, [image] if image else [], model,
+                                                lambda d: bool((d.get("prompt") or "").strip()))
     if data is None:
         raise AssistError("O modelo não devolveu um prompt corrigido (" + "; ".join(e for e in errors if not isinstance(e, tuple))[:300] + ").")
     data.setdefault("negative", "")
     data.setdefault("explanation", "")
+    data["warning"] = IMAGES_IGNORED if image and not seen else ""
     data["model"] = info.get("model")
     data["provider"] = info.get("provider")
     return data

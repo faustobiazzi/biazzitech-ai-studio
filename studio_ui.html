@@ -117,16 +117,41 @@
 
     <label for="chat-preset">Modo:</label>
     <select id="chat-preset">
+      <option value="free" selected>Assistente Livre</option>
       <option value="gdscript">Godot 4.7 GDScript</option>
       <option value="lua">Lua (LÖVE, Defold, Roblox...)</option>
       <option value="python">Python (Pygame, Ren'Py...)</option>
       <option value="csharp">C# (Godot .NET, Unity)</option>
       <option value="lore">Lore & Diálogos</option>
-      <option value="free">Assistente Livre</option>
     </select>
 
-    <button class="mini-btn" onclick="clearChat()" title="Limpar histórico">Limpar</button>
+    <label for="conv-select">Conversa:</label>
+    <select id="conv-select" onchange="openConversation(this.value)" title="Suas conversas ficam guardadas no servidor"></select>
+    <button class="mini-btn" onclick="newConversation()" title="Começar uma conversa nova">+ Nova</button>
+    <button class="mini-btn" onclick="toggleMemory()" title="Memória da conversa: o resumo do que já foi falado, que a IA recebe junto com as últimas mensagens">🧠 Memória</button>
+    <button class="mini-btn" onclick="clearChat()" title="Limpar: apaga as mensagens e a memória desta conversa">Limpar</button>
+    <button class="mini-btn danger" onclick="deleteConversation()" title="Apagar esta conversa">🗑</button>
+    <label id="conv-all-wrap" class="ref-name" style="display:none" title="Administradores: ver também as conversas dos outros usuários (só leitura)"><input id="conv-all" type="checkbox" onchange="loadConversations()"> de todos</label>
   </div>
+  <div id="conv-memory" class="assist-panel" style="display:none">
+    <div class="assist-row"><strong>🧠 Memória desta conversa</strong> <span id="conv-info" class="ref-name"></span></div>
+    <div id="conv-undo" class="policy-warn" style="display:none"></div>
+    <div id="conv-anchors" class="conv-anchors"></div>
+    <div id="conv-pins" class="conv-anchors"></div>
+    <div class="assist-row conv-opts">
+      <strong>🤖 Com ajuda da IA</strong>
+      <span class="ref-name">(cada uso gasta 1 consulta extra / tokens)</span>
+      <label class="ref-name"><input id="opt-ai-confirm" type="checkbox" onchange="saveConvPrefs()"> confirmar se a frase era mesmo reclamação/mudança de contexto</label>
+      <label class="ref-name"><input id="opt-partial" type="checkbox" onchange="saveConvPrefs()"> na mudança de contexto, tirar só o que conflita</label>
+    </div>
+    <textarea id="conv-memory-text" placeholder="Vazia. Quando a conversa crescer, a IA resume aqui o que importa (objetivo, decisões, nomes, pendências) e as mensagens antigas saem do contexto. Você pode escrever ou corrigir à mão."></textarea>
+    <div class="assist-row">
+      <button class="mini-btn key-save" onclick="saveMemory()">Salvar memória</button>
+      <button class="mini-btn" onclick="compactConversation(this)" title="Resume agora as mensagens antigas na memória (as últimas continuam inteiras)">Compactar agora</button>
+      <button class="mini-btn" onclick="toggleMemory()">Fechar</button>
+    </div>
+  </div>
+  <div id="conv-readonly" class="policy-warn" style="display:none"></div>
 
   <div id="chat-messages">
     <div class="msg assistant">
@@ -256,6 +281,10 @@
       </div>
       <div id="assist-plan"></div>
     </div>
+    <select id="gallery-owner" class="gallery-owner" style="display:none" onchange="document.getElementById('image-gallery').innerHTML=''; loadGallery()" title="Administradores veem as imagens de todos os usuários">
+      <option value="all">Galeria: de todos os usuários</option>
+      <option value="mine">Galeria: só as minhas</option>
+    </select>
     <div id="image-gallery"></div>
   </div>
 

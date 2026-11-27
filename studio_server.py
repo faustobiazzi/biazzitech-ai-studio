@@ -35,6 +35,7 @@ import prompt_assist
 import characters
 import comic_layouts
 import godot_export
+import conversations
 
 DEFAULT_PORT = 9090
 MAX_BODY = 60 * 1024 * 1024  # imagens de referência em base64 cabem com folga
@@ -226,6 +227,7 @@ def _public_gallery_item(img_path: str, meta: dict) -> dict:
         "created_at": meta.get("created_at") or 0,
         "updated_at": meta.get("updated_at") or 0,
         "modified": bool(meta.get("modified", False)),
+        "owner": meta.get("owner") or "",
     }
 
 
@@ -256,12 +258,25 @@ def save_output_image(img_bytes: bytes, stem: str, ext: str, meta: dict = None) 
             "created_at": float(meta.get("created_at") or now),
             "updated_at": now,
             "modified": False,
+            "owner": meta.get("owner") or "",
             "file_size": st.st_size,
             "file_mtime_ns": st.st_mtime_ns,
             "sha256": hashlib.sha256(img_bytes).hexdigest(),
         }
         _write_json_atomic(sidecar_json_path(out_path), record)
         return _public_gallery_item(out_path, record)
+
+
+def image_owner(name: str) -> str:
+    """Dono gravado no .json anexo ('' = imagem antiga/sem dono: só administradores veem)."""
+    path = resolve_output_image(name)
+    if not path:
+        return ""
+    try:
+        with open(sidecar_json_path(path), "r", encoding="utf-8") as f:
+            return (json.load(f) or {}).get("owner") or ""
+    except (OSError, ValueError):
+        return ""
 
 
 def delete_output_image(name: str) -> bool:
@@ -440,6 +455,159 @@ class StudioHandler(BaseHTTPRequestHandler):
     def _user(self):
         return access.user_from_request(self.headers.get("Cookie"), self.headers.get("Authorization"))
 
+    def _owner(self) -> str:
+        """Nome de quem está usando: o usuário logado ou 'local' (este PC sem login)."""
+        user = self._user()
+        return user["name"] if user else "local"
+
+    def _owner_keys(self):
+        """Donos que esta pessoa representa: ela mesma e, se for administrador, também 'local' (este PC sem login)."""
+        me = self._owner()
+        return (me, "local") if me != "local" and self._is_admin() else (me,)
+
+    def _is_admin(self) -> bool:
+        return access.decide("admin", self._is_local(), self._user())[0]
+
+    def _can_see_image(self, name) -> bool:
+        return self._is_admin() or image_owner(name) == self._owner()
+
+    def _handle_conversation_chat(self, req):
+        """Pergunta numa conversa guardada: grava, monta o contexto com a memória, responde e grava a resposta."""
+        me, content = self._owner(), (req.get("content") or "").strip()
+        keys = self._owner_keys()
+        if not content:
+            self._send_json(400, {"ok": False, "message": "Mensagem vazia."})
+            return
+        model = req.get("model") or "auto"
+        said = req.get("display") or content
+        prefs = conversations.get_prefs(me)
+        extra_calls, removed = 0, []
+        try:
+            cid = req.get("conversation_id") or ""
+            if not cid:
+                cid = conversations.create(me, preset=req.get("preset") or "", model=model)["id"]
+            conv = conversations.get(cid, keys, False)
+            if not conversations.can_edit(conv, keys):
+                raise conversations.ConversationError("Só o dono pode escrever nesta conversa.")
+            # resposta à pergunta das opções com IA ("sim", "faça", "do it", "não"...): resolve aqui, sem gastar consulta
+            if conv.get("pending_question") == "ai_options":
+                answer = conversations.parse_answer(said)
+                conversations.set_pending_question(cid, keys, None)
+                if answer is not None:
+                    prefs = conversations.set_prefs(me, ai_confirm=answer, partial_reset=answer, asked=True)
+                    conversations.append(cid, keys, "user", content, display=req.get("display"), intent="skip")
+                    reply = ("✅ Ativado: vou confirmar com a IA as reclamações e mudanças de contexto e, na mudança, "
+                             "tirar só o que conflita. Cada uso gasta uma consulta extra. Dá para desligar na 🧠 Memória."
+                             if answer else
+                             "👍 Fica desligado: sigo pela detecção de frases, sem gastar consultas extras. "
+                             "Dá para ligar depois na 🧠 Memória.")
+                    conv = conversations.append(cid, keys, "assistant", reply, meta={"provider": "painel", "model": "local"})
+                    self._send_json(200, {"ok": True, "reply": reply, "provider": "painel", "model": "local",
+                                          "conversation_id": cid, "title": conv["title"], "prefs": prefs,
+                                          "user_index": len(conv["messages"]) - 2,
+                                          "reply_index": len(conv["messages"]) - 1, "intent": None})
+                    return
+            intent = conversations.detect_intent(said)
+            if intent and prefs.get("ai_confirm"):
+                intent = conversations.confirm_intent(conv, said, intent)
+                extra_calls += 1
+            keep = None
+            if intent == "reset" and prefs.get("partial_reset") and conv.get("anchors"):
+                keep, removed = conversations.partial_keep(conv, said)
+                extra_calls += 1
+            conv = conversations.append(cid, keys, "user", content, display=req.get("display"), intent=intent, keep=keep)
+            if intent == "reset" and keep is None:
+                removed = [a["text"] for a in (conv.get("undo") or {}).get("anchors", [])]
+        except conversations.ConversationError as e:
+            self._send_json(403, {"ok": False, "message": str(e)})
+            return
+        messages = conversations.build_context(conv, req.get("system") or "", intent=intent,
+                                               query=req.get("display") or content)
+        rescue = conv.pop("_last_rescue", {})
+        try:
+            data, info = router.chat_completion({"model": model, "messages": messages,
+                                                 "temperature": req.get("temperature", 0.7)}, timeout=180)
+        except router.RouterError as e:
+            conversations.pop_last_user(cid, keys)
+            self._send_json(502, {"ok": False, "message": str(e), "conversation_id": cid})
+            return
+        msg = (data.get("choices") or [{}])[0].get("message") or {}
+        reply = msg.get("content") or "(Sem conteúdo)"
+        conv = conversations.append(cid, keys, "assistant", reply,
+                                    meta={"provider": info.get("provider"), "model": data.get("model") or info.get("model")})
+        user_index = len(conv["messages"]) - 2
+        question = None
+        if intent and not prefs.get("asked"):  # 1ª vez que faz sentido: pergunta no chat se quer as opções com IA
+            conversations.set_prefs(me, asked=True)
+            conv = conversations.append(cid, keys, "assistant", conversations.AI_OPTIONS_QUESTION,
+                                        meta={"provider": "painel", "model": "local"})
+            conversations.set_pending_question(cid, keys, "ai_options")
+            question = conversations.AI_OPTIONS_QUESTION
+        if intent == "reset" and conv.get("memory"):  # memória sem o que ficou do contexto antigo
+            def rebase():
+                try:
+                    conversations.rebase_memory(cid, keys)
+                except Exception as e:
+                    sys.stderr.write(f"[Studio] memória não reescrita: {e}\n")
+            threading.Thread(target=rebase, daemon=True).start()
+        compacting = conversations.needs_compaction(conv)
+        if compacting:  # resume em segundo plano para a próxima pergunta já sair mais leve
+            def bg():
+                try:
+                    conversations.compact(cid, keys)
+                except Exception as e:
+                    sys.stderr.write(f"[Studio] compactação automática falhou: {e}\n")
+            threading.Thread(target=bg, daemon=True).start()
+        self._send_json(200, {"ok": True, "reply": reply, "provider": info.get("provider"),
+                              "model": data.get("model") or info.get("model"), "conversation_id": cid,
+                              "title": conv["title"], "compacting": compacting, "intent": intent,
+                              "rescue": rescue, "question": question, "removed_anchors": removed,
+                              "extra_calls": extra_calls, "user_index": user_index, "reply_index": user_index + 1,
+                              "can_undo": intent == "reset",
+                              "context_chars": conversations.summary(conv)["context_chars"]})
+
+    def _handle_conversation_action(self, req):
+        me, admin, action, cid = self._owner(), self._is_admin(), req.get("action"), req.get("id") or ""
+        keys = self._owner_keys()
+        try:
+            if action == "new":
+                out = conversations.create(me, req.get("title") or "", req.get("preset") or "", req.get("model") or "")
+            elif action == "rename":
+                out = conversations.rename(cid, keys, req.get("title"))
+            elif action == "memory":
+                out = conversations.set_memory(cid, keys, req.get("memory"))
+            elif action == "undo_reset":
+                out = conversations.undo_reset(cid, keys)
+            elif action == "pin":
+                out = conversations.toggle_pin(cid, keys, int(req.get("index")))
+            elif action == "prefs":
+                out = {"prefs": conversations.set_prefs(me, ai_confirm=req.get("ai_confirm"),
+                                                         partial_reset=req.get("partial_reset"), asked=True)}
+            elif action == "anchor_remove":
+                out = conversations.remove_anchor(cid, keys, int(req.get("index")))
+            elif action == "clear":
+                out = conversations.clear(cid, keys)
+            elif action == "compact":
+                out = conversations.compact(cid, keys, req.get("model"))
+            elif action == "delete":
+                conversations.delete(cid, keys, admin)
+                out = {}
+            elif action == "cleanup":
+                days = max(1, int(req.get("days") or 90))
+                everyone = admin and req.get("everyone")
+                out = {"removed": conversations.cleanup(days, None if everyone else keys)}
+            else:
+                self._send_json(400, {"ok": False, "message": "Ação desconhecida."})
+                return
+        except conversations.ConversationError as e:
+            self._send_json(400, {"ok": False, "message": str(e)})
+            return
+        except (TypeError, ValueError):
+            self._send_json(400, {"ok": False, "message": "Pedido inválido."})
+            return
+        info = conversations.summary(out) if isinstance(out, dict) and "messages" in out else out
+        self._send_json(200, {"ok": True, "result": info})
+
     def _guard(self, perm, check_origin=False) -> bool:
         """Confere permissão da rota. Responde 401/403 e devolve False se negado."""
         if check_origin and not self._origin_ok():
@@ -469,7 +637,7 @@ class StudioHandler(BaseHTTPRequestHandler):
 
     def _gallery_data_url(self, name):
         path = resolve_output_image(name)
-        if not path:
+        if not path or not self._can_see_image(name):
             return None
         with open(path, "rb") as f:
             data = f.read()
@@ -719,7 +887,34 @@ class StudioHandler(BaseHTTPRequestHandler):
         if parsed_path == "/api/images":
             if not self._guard("imagens"):
                 return
-            self._send_json(200, {"ok": True, "images": sync_output_images()})
+            items = sync_output_images()
+            admin, me = self._is_admin(), self._owner()
+            if not admin:
+                items = [i for i in items if i.get("owner") == me]
+            self._send_json(200, {"ok": True, "images": items, "is_admin": admin, "me": me})
+            return
+
+        if parsed_path == "/api/conversations":
+            if not self._guard("chat"):
+                return
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            admin = self._is_admin()
+            everyone = admin and query.get("all", ["0"])[0] == "1"
+            self._send_json(200, {"ok": True, "me": self._owner(), "mine": list(self._owner_keys()), "is_admin": admin,
+                                  "prefs": conversations.get_prefs(self._owner()),
+                                  "conversations": conversations.list_for(self._owner_keys(), admin, everyone)})
+            return
+
+        if parsed_path.startswith("/api/conversations/"):
+            if not self._guard("chat"):
+                return
+            try:
+                conv = conversations.get(parsed_path.rsplit("/", 1)[1], self._owner_keys(), self._is_admin())
+            except conversations.ConversationError as e:
+                self._send_json(404, {"ok": False, "message": str(e)})
+                return
+            self._send_json(200, {"ok": True, "conversation": {**conv, "can_edit": conversations.can_edit(conv, self._owner_keys()),
+                                                                "info": conversations.summary(conv)}})
             return
 
         if parsed_path == "/api/image/options":
@@ -735,6 +930,13 @@ class StudioHandler(BaseHTTPRequestHandler):
                 return
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             self._send_json(200, router.status(refresh=query.get("refresh", ["0"])[0] == "1"))
+            return
+
+        if parsed_path == "/api/models/availability":
+            if not self._guard("chat"):
+                return
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            self._send_json(200, {"ok": True, "models": router.model_availability(query.get("m", [])[:200])})
             return
 
         if parsed_path in ("/v1/models", "/models"):
@@ -765,7 +967,10 @@ class StudioHandler(BaseHTTPRequestHandler):
         if parsed_path.startswith("/imagens/"):
             if not self._guard("imagens"):
                 return
-            img_path = resolve_output_image(urllib.parse.unquote(parsed_path[len("/imagens/"):]))
+            img_name = urllib.parse.unquote(parsed_path[len("/imagens/"):])
+            img_path = resolve_output_image(img_name)
+            if img_path and not self._can_see_image(img_name):
+                img_path = None
             if not img_path:
                 sync_output_images()
                 self._send_json(404, {"error": "Imagem nao encontrada"})
@@ -1051,10 +1256,23 @@ class StudioHandler(BaseHTTPRequestHandler):
             saved = save_output_image(data, f"{label}_{int(time.time())}", ext, {
                 "model": req.get("label") or "página montada",
                 "provider": "montagem",
+                "owner": self._owner(),
                 "prompt": req.get("prompt") or "",
                 "settings": req.get("settings") if isinstance(req.get("settings"), dict) else {},
             })
             self._send_json(200, {"ok": True, **saved, "data_url": req["data_url"]})
+            return
+
+        if parsed_path == "/api/chat":
+            if not self._guard("chat", check_origin=True):
+                return
+            self._handle_conversation_chat(self._read_json(body))
+            return
+
+        if parsed_path == "/api/conversations":
+            if not self._guard("chat", check_origin=True):
+                return
+            self._handle_conversation_action(self._read_json(body))
             return
 
         if parsed_path in ("/api/image/open", "/api/image/delete"):
@@ -1067,6 +1285,9 @@ class StudioHandler(BaseHTTPRequestHandler):
                 name = json.loads(body.decode("utf-8") or "{}").get("name")
             except Exception:
                 name = None
+            if resolve_output_image(name) and not self._can_see_image(name):
+                self._send_json(404, {"ok": False, "message": "Imagem não encontrada (já foi excluída?)"})
+                return
             if parsed_path.endswith("/delete"):
                 try:
                     removed = delete_output_image(name)
@@ -1254,6 +1475,7 @@ class StudioHandler(BaseHTTPRequestHandler):
             "prompt": prompt,
             "negative": payload.get("negative") or "",
             "provider": "pollinations",
+            "owner": self._owner(),
             "settings": {"model": model, "aspect": aspect},
             "width": w,
             "height": h,
@@ -1320,6 +1542,7 @@ class StudioHandler(BaseHTTPRequestHandler):
                 "prompt": prompt,
                 "negative": payload.get("negative") or "",
                 "provider": provider,
+                "owner": self._owner(),
                 "settings": {k: payload.get(k) for k in ("mode", "width", "height", "transparent", "model_id",
                                                           "model", "aspect", "loras", "fast", "strength")},
                 "width": opts.get("width") or "",

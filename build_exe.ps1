@@ -53,6 +53,7 @@ Invoke-Py (@(
     "--hidden-import", "prompt_assist",
     "--hidden-import", "characters",
     "--hidden-import", "comic_layouts",
+    "--hidden-import", "conversations",
     "--hidden-import", "godot_export",
     "--hidden-import", "sd_local",
     # arquivos temporarios fora do OneDrive (ele trava arquivos durante a limpeza)

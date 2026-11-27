@@ -98,6 +98,22 @@ class RouterTest(unittest.TestCase):
         self.assertFalse({p["id"]: p for p in router.status()["providers"]}["groq"]["hidden"])
         self.assertFalse(router.edit_provider("custom_x", {"label": "y"})[0])
 
+    # ------------------------------------------------------------ listas do painel: só o que funciona
+    def test_model_lists_only_show_working_providers(self):
+        write_env(GROQ_API_KEY="gsk_x", GEMINI_API_KEY="g")
+        router.load_env()
+        av = router.model_availability(["auto", "groq/llama-3.3-70b", "gemini-flash-latest", "claude/auto", "pixellab"])
+        self.assertTrue(av["auto"]["show"] and av["groq/llama-3.3-70b"]["show"])
+        self.assertFalse(av["claude/auto"]["show"])   # sem chave
+        self.assertFalse(av["pixellab"]["show"])      # gerador de imagem sem chave
+        router._record_error("groq", "m", 429, "rate limit")  # espera curta: continua, marcada
+        av = router.model_availability(["groq/llama-3.3-70b"])["groq/llama-3.3-70b"]
+        self.assertEqual((av["show"], av["waiting"]), (True, True))
+        router._record_error("gemini", "m", 401, "invalid key")  # chave recusada: some
+        self.assertFalse(router.model_availability(["gemini-flash-latest"])["gemini-flash-latest"]["show"])
+        router.edit_provider("groq", {"disabled": True})
+        self.assertFalse(router.model_availability(["groq/x"])["groq/x"]["show"])
+
     # ------------------------------------------------------------ esperas (cooldown)
     def test_parse_duration(self):
         self.assertEqual(router._parse_duration("2m30s"), 150)
