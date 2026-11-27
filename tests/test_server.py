@@ -56,6 +56,18 @@ class ServerTest(unittest.TestCase):
             self.assertIn(ctype, h["Content-Type"])
             self.assertGreater(len(raw), 1000)
         self.assertEqual(self.call("/ui/../provider_router.py")[0], 404)
+        # app instalável (PWA): manifesto e service worker na raiz, ícones PNG de verdade
+        st, h, raw = self.call("/manifest.webmanifest")
+        self.assertEqual(st, 200)
+        man = json.loads(raw)
+        self.assertEqual(man["display"], "standalone")
+        self.assertTrue(any(i.get("purpose") == "maskable" for i in man["icons"]))
+        st, h, raw = self.call("/sw.js")
+        self.assertEqual(st, 200)
+        self.assertIn("javascript", h["Content-Type"])
+        for icon in man["icons"]:
+            st, h, raw = self.call(icon["src"])
+            self.assertEqual((st, h["Content-Type"], raw[:8]), (200, "image/png", b"\x89PNG\r\n\x1a\n"))
         self.assertEqual(self.call("/ui/nao_existe.js")[0], 404)
 
     def test_comic_and_characters_routes(self):

@@ -2904,3 +2904,24 @@ async function loadAccess() {
 }
 
 loadMe();
+
+// ================= APP INSTALÁVEL (PWA) =================
+// O navegador só registra o service worker em contexto seguro (HTTPS ou localhost).
+if ('serviceWorker' in navigator && window.isSecureContext) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
+let installPrompt = null;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  installPrompt = e;
+  const b = document.getElementById('btn-install');
+  if (b) b.style.display = '';
+});
+async function installApp() {
+  if (!installPrompt) { alert('Use o menu do navegador → "Instalar app" / "Adicionar à tela inicial".'); return; }
+  installPrompt.prompt();
+  await installPrompt.userChoice.catch(() => {});
+  installPrompt = null;
+  const b = document.getElementById('btn-install');
+  if (b) b.style.display = 'none';
+}

@@ -51,7 +51,13 @@ POLLINATIONS_IMAGE_MAP = {
 
 load_env = router.load_env  # um só leitor de ~/.env
 
-UI_FILES = {"studio.css": "text/css; charset=utf-8", "studio.js": "application/javascript; charset=utf-8"}
+UI_FILES = {"studio.css": "text/css; charset=utf-8", "studio.js": "application/javascript; charset=utf-8",
+            # app instalável (PWA): manifesto, service worker e ícones
+            "manifest.webmanifest": "application/manifest+json; charset=utf-8",
+            "sw.js": "application/javascript; charset=utf-8", "icon-192.png": "image/png", "icon-512.png": "image/png",
+            "icon-maskable-512.png": "image/png", "apple-touch-icon.png": "image/png"}
+ROOT_UI_FILES = {"/manifest.webmanifest": "manifest.webmanifest", "/sw.js": "sw.js",
+                 "/apple-touch-icon.png": "apple-touch-icon.png", "/favicon.ico": "icon-192.png"}
 
 
 def _ui_candidates(rel):
@@ -834,8 +840,9 @@ class StudioHandler(BaseHTTPRequestHandler):
             self.wfile.write(html)
             return
 
-        if parsed_path.startswith("/ui/"):
-            name = parsed_path[len("/ui/"):]
+        if parsed_path.startswith("/ui/") or parsed_path in ROOT_UI_FILES:
+            # o service worker precisa ser servido na raiz para controlar o painel inteiro
+            name = ROOT_UI_FILES.get(parsed_path) or parsed_path[len("/ui/"):]
             data = get_ui_file(os.path.join("ui", name)) if name in UI_FILES else None
             if data is None:
                 self._send_json(404, {"error": "Arquivo nao encontrado"})
@@ -1363,6 +1370,10 @@ class StudioHandler(BaseHTTPRequestHandler):
                 self._send_json(404, {"ok": False, "message": "Imagem não encontrada (já foi excluída?)"})
                 return
             try:
+                if not hasattr(os, "startfile"):
+                    self._send_json(400, {"ok": False, "message": "Abrir no visualizador só funciona no Windows. "
+                                                                   "Use Compartilhar ou abra a imagem no navegador."})
+                    return
                 os.startfile(img_path)  # abre no visualizador padrão do Windows
                 self._send_json(200, {"ok": True, "message": "Imagem aberta."})
             except Exception as e:

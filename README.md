@@ -48,13 +48,14 @@ Estúdio de IA para quem cria jogos e histórias: código (Godot 4 / GDScript, L
 6. [Imagens e pixel art](#6-imagens-e-pixel-art) — [quadrinhos](#páginas-de-quadrinho-modelos-divisão-e-onomatopeias) · [fichas de personagem](#fichas-de-personagem) · [Godot](#exportar-para-o-godot-4)
 7. [IA local (Ollama)](#7-ia-local-ollama) — [imagens offline com LoRAs](#imagens-offline-com-loras-stable-diffusion-local)
 8. [Usuários, senhas, rede e porta](#8-usuários-senhas-rede-e-porta)
-9. [Versão .exe (sem Python)](#9-versão-exe-sem-python)
-10. [Continue, Cline e outras ferramentas (proxy OpenAI)](#10-continue-cline-e-outras-ferramentas-proxy-openai)
-11. [Pastas e arquivos](#11-pastas-e-arquivos)
-12. [Segurança](#12-segurança)
-13. [Problemas comuns](#13-problemas-comuns)
-14. [Licença](#14-licença)
-15. [Como o projeto é feito](#15-como-o-projeto-é-feito)
+9. [Celular (app instalável e Android)](#9-celular-app-instalável-e-android)
+10. [Versão .exe (sem Python)](#10-versão-exe-sem-python)
+11. [Continue, Cline e outras ferramentas (proxy OpenAI)](#11-continue-cline-e-outras-ferramentas-proxy-openai)
+12. [Pastas e arquivos](#12-pastas-e-arquivos)
+13. [Segurança](#13-segurança)
+14. [Problemas comuns](#14-problemas-comuns)
+15. [Licença](#15-licença)
+16. [Como o projeto é feito](#16-como-o-projeto-é-feito)
 
 ---
 
@@ -92,6 +93,18 @@ O instalador faz 6 passos e pergunta o que precisar:
 ```
 
 Outras chaves aceitas: `-DeepSeekKey`, `-PollinationsKey`, `-OpenRouterKey`, `-XaiKey`, `-OllamaCloudKey`, `-PixelLabKey`, `-RetroDiffusionKey`, `-ScenarioKey` (formato `CHAVE:SEGREDO`), `-PixAIKey`.
+
+### Linux (Debian, Ubuntu, Mint, Pop!_OS...)
+
+Baixe o `biazzitech-ai-studio_<versão>_all.deb` na página de [Releases](https://github.com/faustobiazzi/biazzitech-ai-studio/releases) e instale:
+
+```bash
+sudo apt install ./biazzitech-ai-studio_*_all.deb
+```
+
+Abra pelo **menu de aplicativos → BiazziTech AI Studio** ou no terminal com `biazzitech-studio` (opções `--port 9191` e `--no-browser`). As chaves ficam em `~/.env` e os dados em `~/.biazzitech`, por usuário. Para remover: `sudo apt remove biazzitech-ai-studio` (seus dados ficam). Em outras distribuições, rode direto do repositório: `python3 biazzitech_studio.py`. O pacote é gerado por `python build_deb.py` (funciona em qualquer sistema) e é instalado e testado num Ubuntu a cada envio.
+
+No Linux funciona o painel inteiro; o que é só do Windows: o instalador PowerShell, os `.bat`, o `.exe` e o "Abrir no visualizador". O Ollama do Linux é usado se estiver rodando; o SD local precisa do `sd-server` colocado à mão em `~/.biazzitech/sdlocal/bin`.
 
 ### Modo demo (sem nenhuma chave)
 
@@ -366,7 +379,22 @@ Com `cert.pem` e `key.pem` nessa pasta e a rede ligada, o painel passa a atender
 
 ---
 
-## 9. Versão .exe (sem Python)
+## 9. Celular (app instalável e Android)
+
+**App instalável (PWA):** o painel pode virar um app com ícone na tela inicial e tela cheia — no celular ou no PC. Abra o painel no navegador e use o botão **📲 Instalar app** (ou o menu do navegador → *Instalar app* / *Adicionar à tela inicial*). O navegador só oferece isso em **HTTPS** ou em `localhost`; pela rede em `http://IP:porta`, ative o HTTPS ([seção 8](#8-usuários-senhas-rede-e-porta)). O app guarda só a "casca" do painel para abrir rápido; conversas, imagens e chaves continuam no servidor.
+
+**Android sem PC (Termux):** o servidor roda no próprio celular, porque só usa a biblioteca padrão do Python.
+
+1. Instale o **Termux** pelo F-Droid ou pelo GitHub do Termux (a versão da Play Store está desatualizada).
+2. No Termux:
+   ```bash
+   pkg install -y curl && curl -fsSL https://raw.githubusercontent.com/faustobiazzi/biazzitech-ai-studio/main/termux/instalar_termux.sh | bash
+   ```
+3. Para abrir: `studio` — o navegador abre em `http://localhost:9090` (como é `localhost`, a **localização funciona** para "lugares perto"). Depois, **📲 Instalar app** põe o ícone na tela inicial.
+
+Funciona no celular: chat com rodízio, conversas e memória, busca na web, lugares perto, imagens online (Pollinations, PixelLab, Retro Diffusion, SD de outro PC), quadrinhos e fichas. Não funciona: SD local, Ollama e a integração com o Antigravity. Deixe o Termux aberto enquanto usa (o atalho `studio` pede ao Android para não pausar o servidor).
+
+## 10. Versão .exe (sem Python)
 
 1. Numa máquina **com** Python, rode `bat\Gerar_EXE.bat`. Na primeira vez ele pede para instalar o **PyInstaller**.
 2. Saída: `dist\BiazziTech AI Studio.exe` (um arquivo, ~9 MB). Copie para qualquer Windows 10/11 e dê duplo-clique.
@@ -376,7 +404,7 @@ O `.exe` tem o painel, o rodízio, as imagens e o controle de acesso. A integra�
 
 ---
 
-## 10. Continue, Cline e outras ferramentas (proxy OpenAI)
+## 11. Continue, Cline e outras ferramentas (proxy OpenAI)
 
 | Campo | Valor |
 |---|---|
@@ -388,7 +416,7 @@ Streaming (SSE) funciona. A resposta traz o campo `provider` com quem respondeu.
 
 ---
 
-## 11. Pastas e arquivos
+## 12. Pastas e arquivos
 
 | O que | Onde |
 |---|---|
@@ -431,13 +459,16 @@ Streaming (SSE) funciona. A resposta traz o campo `provider` com quem respondeu.
 | `studio_cli.py`, `free_image_gen.py`, `pixai_gen.py` | Ferramentas de linha de comando |
 | `tests/` | Testes automáticos (sem internet e sem chaves) |
 | `build_exe.ps1` | Gera o `.exe` |
+| `build_deb.py` | Gera o pacote `.deb` para Linux |
 | `plugin_antigravity/` | Plugin/Sidecar do Antigravity |
 | `bat/` | Atalhos de duplo-clique |
+| `termux/instalar_termux.sh` | Instalação no Android pelo Termux |
+| `ui/manifest.webmanifest`, `ui/sw.js`, `ui/icon-*.png` | App instalável (PWA) |
 | `docs/img/` | Prints deste README |
 
 ---
 
-## 12. Segurança
+## 13. Segurança
 
 - O servidor escuta **só neste PC** até você liberar a rede — e a rede exige usuário com senha.
 - **Outros sites abertos no navegador não conseguem usar o painel** nem suas chaves: todo pedido de envio confere a origem, e o navegador só libera leitura das respostas para o próprio painel.
@@ -452,7 +483,7 @@ O BiazziTech AI Studio é uma ferramenta para uso local. Liberar o acesso pela r
 
 ---
 
-## 13. Problemas comuns
+## 14. Problemas comuns
 
 | Sintoma | O que fazer |
 |---|---|
@@ -465,7 +496,7 @@ O BiazziTech AI Studio é uma ferramenta para uso local. Liberar o acesso pela r
 
 ---
 
-## 14. Licença
+## 15. Licença
 
 Copyright © 2026 BiazziTech (Fausto Sousa).
 
@@ -481,7 +512,7 @@ O BiazziTech AI Studio é software livre sob a **[GNU Affero General Public Lice
 
 ---
 
-## 15. Como o projeto é feito
+## 16. Como o projeto é feito
 
 O BiazziTech AI Studio é **desenvolvido com auxílio de IA** (Claude e Google Antigravity). A ideia, as decisões de produto, a revisão e a responsabilidade pelo projeto são do autor; as IAs ajudam a escrever e revisar o código.
 

@@ -805,14 +805,15 @@ def daily_limit(pid):
 
 def data_dir():
     """Pasta de dados do kit (estado do rodízio, imagens geradas).
-    BIAZZITECH_HOME > ~/.biazzitech (instalação stand-alone) > ~/.gemini/antigravity (instalação antiga)."""
+    BIAZZITECH_HOME > ~/.gemini/antigravity só se já tiver dados de uma instalação antiga > ~/.biazzitech."""
     custom = (os.environ.get("BIAZZITECH_HOME") or "").strip()
     if custom:
         d = custom
-    elif os.path.isdir(os.path.join(_home(), ".biazzitech")):
-        d = os.path.join(_home(), ".biazzitech")
+    elif (os.path.isfile(os.path.join(_home(), ".gemini", "antigravity", "router_state.json"))
+          and not os.path.isdir(os.path.join(_home(), ".biazzitech"))):
+        d = os.path.join(_home(), ".gemini", "antigravity")  # instalação antiga: continua onde estava
     else:
-        d = os.path.join(_home(), ".gemini", "antigravity")
+        d = os.path.join(_home(), ".biazzitech")  # padrão (PC novo, .exe, Termux)
     os.makedirs(d, exist_ok=True)
     return d
 

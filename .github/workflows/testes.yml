@@ -19,3 +19,24 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Testes (sem internet, sem chaves)
         run: python -m unittest discover -s tests -t tests -v
+
+  pacote-deb:
+    # gera o .deb, instala com o apt num Ubuntu de verdade, abre o painel e desinstala
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Gerar o .deb
+        run: python3 build_deb.py --versao 0.0.0-teste
+      - name: Instalar com apt
+        run: sudo apt-get install -y ./dist/biazzitech-ai-studio_0.0.0-teste_all.deb
+      - name: Abrir o painel instalado
+        run: |
+          biazzitech-studio --no-browser --port 9191 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:9191/healthz && break; sleep 1; done
+          curl -sf http://127.0.0.1:9191/healthz | grep -q biazzitech
+          curl -sf http://127.0.0.1:9191/ui/studio.js > /dev/null
+          curl -sf http://127.0.0.1:9191/api/demo | grep -q '"demo": true'
+          test -d "$HOME/.biazzitech"
+          desktop-file-validate /usr/share/applications/biazzitech-ai-studio.desktop || true
+      - name: Desinstalar
+        run: sudo apt-get remove -y biazzitech-ai-studio

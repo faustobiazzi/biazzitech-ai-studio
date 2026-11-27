@@ -124,6 +124,28 @@ class RouterTest(unittest.TestCase):
         router.load_env()
         self.assertFalse(router.demo_status()["demo"])
 
+    def test_data_dir_choice(self):
+        import os
+        import tempfile
+        saved = {k: os.environ.get(k) for k in ("BIAZZITECH_HOME", "USERPROFILE", "HOME")}
+        try:
+            for case, expected in (("novo", ".biazzitech"), ("antigravity_sem_studio", ".biazzitech"),
+                                   ("legado", os.path.join(".gemini", "antigravity"))):
+                h = tempfile.mkdtemp()
+                if case != "novo":
+                    os.makedirs(os.path.join(h, ".gemini", "antigravity"))
+                if case == "legado":
+                    open(os.path.join(h, ".gemini", "antigravity", "router_state.json"), "w").close()
+                os.environ.pop("BIAZZITECH_HOME", None)
+                os.environ["USERPROFILE"] = os.environ["HOME"] = h
+                self.assertEqual(os.path.relpath(router.data_dir(), h), expected, case)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
     # ------------------------------------------------------------ esperas (cooldown)
     def test_parse_duration(self):
         self.assertEqual(router._parse_duration("2m30s"), 150)
