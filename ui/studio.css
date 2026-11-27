@@ -424,3 +424,8 @@ select:focus, input:focus, textarea:focus {
 .conv-opts { flex-wrap: wrap; gap: 8px; margin: 6px 0; }
 .msg.assistant .pin-btn { top: auto; bottom: 4px; }
 .msg.user:has(.pin-btn) { padding-left: 26px; }
+
+.demo-banner { margin: 8px 12px; padding: 10px 12px; border: 1px dashed var(--accent); border-radius: 8px;
+  background: rgba(212, 155, 56, .08); font-size: 13px; line-height: 1.5; }
+.demo-banner ol { margin: 6px 0 6px 18px; padding: 0; }
+.demo-banner a { color: var(--accent); }

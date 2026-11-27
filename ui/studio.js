@@ -286,7 +286,7 @@ function addMessage(role, text, metaLabel, index) {
   }
 
   const body = document.createElement('div');
-  body.textContent = text;
+  if (role === 'assistant') linkify(body, text); else body.textContent = text;
   div.appendChild(body);
   if (role === 'assistant') {
     const files = codeFilesBar(text);
@@ -295,6 +295,41 @@ function addMessage(role, text, metaLabel, index) {
   box.appendChild(div);
   box.scrollTop = box.scrollHeight;
 }
+
+// URLs http(s) da resposta viram links (abre em outra aba); o resto continua texto puro
+function linkify(node, text) {
+  const re = /https?:\/\/[^\s<>"')\]]+/g;
+  let last = 0, m;
+  while ((m = re.exec(text))) {
+    node.appendChild(document.createTextNode(text.slice(last, m.index)));
+    const a = el('a', null, m[0]); a.href = m[0]; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    node.appendChild(a);
+    last = m.index + m[0].length;
+  }
+  node.appendChild(document.createTextNode(text.slice(last)));
+}
+
+// ================= BUSCA NA WEB / LUGARES PERTO =================
+const PLACES_HINT = /(perto|pr[oó]xim|aqui do lado|redondezas|ao redor|por aqui|nearby|na minha regi[aã]o|no meu bairro|onde (tem|fica|h[aá]|acho|encontro|compro|posso))/i;
+const HTTPS_HINT = '📍 Para maior precisão nas respostas de lugares perto e para usar sua localização, habilite o HTTPS (aba Acesso): sem ele o navegador bloqueia a localização.';
+let lastLocation = null;
+
+function getLocation() {
+  return new Promise(resolve => {
+    if (!window.isSecureContext || !navigator.geolocation) return resolve(null);
+    if (lastLocation && Date.now() - lastLocation.t < 5 * 60 * 1000) return resolve(lastLocation);
+    navigator.geolocation.getCurrentPosition(
+      p => { lastLocation = { lat: p.coords.latitude, lon: p.coords.longitude, accuracy: p.coords.accuracy, t: Date.now() }; resolve(lastLocation); },
+      () => resolve(null), { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 });
+  });
+}
+
+(function initWebMode() {
+  const sel = document.getElementById('web-mode');
+  if (!sel) return;
+  try { const v = localStorage.getItem('bt_web_mode'); if (v) sel.value = v; } catch (e) {}
+  sel.onchange = () => { try { localStorage.setItem('bt_web_mode', sel.value); } catch (e) {} };
+})();
 
 // Blocos ```código``` da resposta viram arquivos que dá para copiar ou baixar.
 // (A IA só devolve texto: nada é executado na sua máquina.)
@@ -401,6 +436,14 @@ async function sendChat() {
   const prompt = input.value.trim();
   if (!prompt) return;
 
+  if (demoState && demoState.demo) {
+    await refreshDemo();
+    if (demoState.demo) {
+      document.getElementById('demo-chat').scrollIntoView({ behavior: 'smooth' });
+      setStatus('Modo demo: cadastre uma chave grátis (Gemini, Groq ou OpenRouter) para usar o chat.');
+      return;
+    }
+  }
   const model = document.getElementById('chat-model').value;
   const presetKey = document.getElementById('chat-preset').value;
   const sysPrompt = PRESETS[presetKey] || PRESETS.free;
@@ -427,11 +470,18 @@ async function sendChat() {
   document.getElementById('status-txt').textContent = 'Consultando ' + model + '...';
 
   try {
+    const webMode = document.getElementById('web-mode').value;
+    let location_ = null;
+    if (webMode !== 'off' && PLACES_HINT.test(prompt)) {
+      if (window.isSecureContext) { setStatus('📍 Pegando sua localização (o navegador pode pedir permissão)...'); location_ = await getLocation(); }
+      else setStatus(HTTPS_HINT);
+    }
     const resp = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ conversation_id: currentConv, content, display, model, system: sysPrompt,
-                             preset: presetKey, temperature: 0.7 }),
+                             preset: presetKey, temperature: 0.7, web: webMode, location: location_,
+                             secure: window.isSecureContext }),
       signal
     });
     const data = await resp.json().catch(() => ({}));
@@ -451,7 +501,9 @@ async function sendChat() {
       (data.intent === 'reset' ? ' — 📌 contexto redefinido: o anterior saiu e a memória está sendo reescrita.' : '') +
       (data.compacting ? ' — a conversa cresceu: compactando a memória em segundo plano.' : '') +
       (data.extra_calls ? ' (+' + data.extra_calls + ' consulta(s) extra da IA)' : '') +
-      (data.question ? ' — 💡 respondi com uma pergunta sobre as opções com IA.' : '');
+      (data.question ? ' — 💡 respondi com uma pergunta sobre as opções com IA.' : '') +
+      (data.kind === 'web' ? ' — 🌐 busca na internet (confira as fontes).' : '') +
+      (data.kind === 'places' && !window.isSecureContext ? ' — ' + HTTPS_HINT : '');
     if (data.intent === 'reset' || data.intent === 'rescue') setTimeout(() => { if (currentConv === data.conversation_id) fetch('/api/conversations/' + currentConv).then(r => r.json()).then(d => { if (d.ok) { convData = d.conversation; fillMemory(); } }); }, data.intent === 'reset' ? 15000 : 500);
     if (wasNew || data.compacting) loadConversations(currentConv);
     if (data.compacting) setTimeout(() => { if (currentConv === data.conversation_id) fetch('/api/conversations/' + currentConv).then(r => r.json()).then(d => { if (d.ok) { convData = d.conversation; fillMemory(); } }); }, 20000);
@@ -1748,8 +1800,9 @@ async function filterModelMenus() {
       if (o.dataset.label === undefined) o.dataset.label = o.textContent;
       const a = av[o.value];
       if (!a) { o.hidden = false; o.disabled = false; return; }
-      o.hidden = o.disabled = !a.show;
-      o.textContent = o.dataset.label + (a.show && a.waiting ? ' — em espera' : '');
+      const keep = a.provider === null;  // "Automático" nunca some (sem ele a lista ficaria vazia no modo demo)
+      o.hidden = o.disabled = !a.show && !keep;
+      o.textContent = o.dataset.label + (a.show && a.waiting ? ' — em espera' : '') + (!a.show && keep ? ' — sem provedor ativo' : '');
       o.title = a.reason || '';
       if (!a.show && o.selected) selectedHidden = true;
     });
@@ -1843,6 +1896,44 @@ async function openCustomForm(editId) {
   name.focus();
 }
 
+// ================= MODO DEMO (instalação sem chaves) =================
+let demoState = null;
+
+async function refreshDemo() {
+  try { demoState = await (await fetch('/api/demo')).json(); } catch (e) { return; }
+  if (!demoState || !demoState.ok) return;
+  const chat = document.getElementById('demo-chat');
+  const img = document.getElementById('demo-img');
+  chat.innerHTML = ''; img.innerHTML = '';
+  chat.style.display = demoState.demo ? '' : 'none';
+  if (demoState.demo) {
+    chat.appendChild(el('strong', null, '🎮 Modo demo: nenhum provedor de texto com chave ainda.'));
+    chat.appendChild(el('div', null, 'As imagens já funcionam (Flux/Pollinations sem chave). Para o chat, o auxiliar de prompt e a memória, crie uma chave GRÁTIS — leva uns 2 minutos e não pede cartão:'));
+    const ol = el('ol');
+    (demoState.free_keys || []).forEach(k => {
+      const li = el('li');
+      const a = el('a', null, k.label + ' ↗'); a.href = k.url; a.target = '_blank'; a.rel = 'noopener';
+      li.appendChild(a);
+      li.appendChild(document.createTextNode(' — entre com sua conta, crie a chave e copie.'));
+      ol.appendChild(li);
+    });
+    chat.appendChild(ol);
+    const row = el('div', 'assist-row');
+    const go = el('button', 'mini-btn key-save', 'Colar a chave na aba Provedores');
+    go.onclick = () => { const b = document.querySelector('.tab-btn[data-tab="providers"]'); if (b) b.click(); };
+    row.appendChild(go);
+    row.appendChild(el('span', 'ref-name', 'Sem internet ou sem conta? Use uma IA no próprio PC: Ollama (bat\\Instalar_Ollama_IA.bat), se a máquina aguentar.'));
+    chat.appendChild(row);
+  }
+  img.style.display = demoState.image_key ? 'none' : '';
+  if (!demoState.image_key) {
+    img.appendChild(el('span', null, '🎮 Imagens em modo demo: o Flux/Pollinations gera sem chave, com marca d\'água e limite menor (só os modelos Flux e Turbo). '));
+    const a = el('a', null, 'Chave grátis do Pollinations ↗'); a.href = demoState.pollinations_url; a.target = '_blank'; a.rel = 'noopener';
+    img.appendChild(a);
+    if (demoState.demo) img.appendChild(el('span', null, ' · O auxiliar de prompt precisa de uma chave de texto (veja a aba Código & Lore).'));
+  }
+}
+
 async function loadProviders(refresh) {
   if (isEditingKey()) return;
   try {
@@ -1850,6 +1941,7 @@ async function loadProviders(refresh) {
     const d = await r.json();
     lastProvidersData = d;
     refreshModelMenus();
+    refreshDemo();
     renderProviders(d);
     const active = (d.providers || []).filter(p => p.available && p.kind !== 'image').map(p => p.id);
     document.getElementById('keys-txt').textContent =
@@ -2577,7 +2669,7 @@ async function doLogout() {
 }
 
 async function loadMe() {
-  setStatus('Pronto — Endpoint OpenAI em ' + location.origin + '/v1');
+  setStatus('Pronto — Endpoint OpenAI em ' + location.origin + '/v1' + (window.isSecureContext ? '' : ' · ' + HTTPS_HINT));
   try { me = await (await _origFetch('/api/auth/me')).json(); } catch (e) { return; }
   const chip = document.getElementById('user-chip');
   if (me.user) {
@@ -2602,6 +2694,7 @@ async function loadMe() {
     if (first) first.click();
   }
   if (vis.chat) loadConversations();
+  if (vis.chat || vis.image) refreshDemo();
   if (vis.image) loadGallery(false);
   if (vis.providers) { loadProviders(true); setInterval(() => loadProviders(false), 15000); }
   // ?tab=image|providers|access abre direto numa aba

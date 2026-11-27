@@ -115,6 +115,11 @@
       <option value="x-ai/grok-4.6">Grok 4.6 (criativo, via Pollinations)</option>
     </select>
 
+    <select id="web-mode" title="Busca na internet: no automático, perguntas de fatos atuais (cotação, notícia, horário...) e 'onde tem X perto' vão para a busca/mapa em vez da IA de conversa">
+      <option value="auto">🌐 Web: automático</option>
+      <option value="always">🌐 Web: sempre buscar</option>
+      <option value="off">🌐 Web: desligada</option>
+    </select>
     <label for="chat-preset">Modo:</label>
     <select id="chat-preset">
       <option value="free" selected>Assistente Livre</option>
@@ -152,6 +157,7 @@
     </div>
   </div>
   <div id="conv-readonly" class="policy-warn" style="display:none"></div>
+  <div id="demo-chat" class="demo-banner" style="display:none"></div>
 
   <div id="chat-messages">
     <div class="msg assistant">
@@ -235,6 +241,7 @@
     <label class="assist-toggle"><input id="assist-on" type="checkbox" onchange="onAssistToggle()"> Auxiliar de prompt</label>
   </div>
 
+  <div id="demo-img" class="demo-banner" style="display:none"></div>
   <div class="img-scroll">
     <div id="lora-panel" class="assist-panel" style="display:none"></div>
     <div id="assist-panel" class="assist-panel" style="display:none">

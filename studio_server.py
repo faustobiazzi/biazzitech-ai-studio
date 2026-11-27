@@ -36,6 +36,7 @@ import characters
 import comic_layouts
 import godot_export
 import conversations
+import web_search
 
 DEFAULT_PORT = 9090
 MAX_BODY = 60 * 1024 * 1024  # imagens de referência em base64 cabem com folga
@@ -507,6 +508,16 @@ class StudioHandler(BaseHTTPRequestHandler):
                                           "user_index": len(conv["messages"]) - 2,
                                           "reply_index": len(conv["messages"]) - 1, "intent": None})
                     return
+            # busca na internet / lugares perto: responde sem passar pela IA de conversa
+            web_calls = []
+
+            def ai_route(text):
+                web_calls.append(1)
+                return web_search.ai_classifier(text)
+            route = web_search.classify(said, req.get("web") or "auto", req.get("preset") or "free",
+                                        ask=ai_route if prefs.get("ai_confirm") else None)
+            if route in ("web", "places") and self._answer_from_web(route, cid, keys, conv, content, said, req, len(web_calls)):
+                return
             intent = conversations.detect_intent(said)
             if intent and prefs.get("ai_confirm"):
                 intent = conversations.confirm_intent(conv, said, intent)
@@ -565,6 +576,46 @@ class StudioHandler(BaseHTTPRequestHandler):
                               "extra_calls": extra_calls, "user_index": user_index, "reply_index": user_index + 1,
                               "can_undo": intent == "reset",
                               "context_chars": conversations.summary(conv)["context_chars"]})
+
+    def _answer_from_web(self, route, cid, keys, conv, content, said, req, extra_calls):
+        """Responde com a busca na internet ou com lugares perto. Devolve False para cair na IA de conversa."""
+        secure = bool(req.get("secure"))
+        note = ""
+        try:
+            if route == "places":
+                loc = req.get("location") if isinstance(req.get("location"), dict) else {}
+                try:
+                    lat, lon = float(loc["lat"]), float(loc["lon"])
+                    acc = float(loc.get("accuracy") or 0) or None
+                except (KeyError, TypeError, ValueError):
+                    lat = lon = acc = None
+                res = web_search.places(said, lat, lon, acc)
+                if res.get("need_location"):
+                    reply = (f"📍 Para achar {res['label'].lower()} perto de você eu preciso da sua localização. " +
+                             ("Permita a localização quando o navegador perguntar (ou libere no cadeado da barra de endereço) e mande de novo. "
+                              if secure else
+                              "O navegador só libera a localização com HTTPS (ou usando o painel no próprio PC, em localhost): "
+                              "peça ao administrador para habilitar o HTTPS na aba Acesso. ") +
+                             "Ou escreva o bairro e a cidade, por exemplo: \"padaria perto de Barão Geraldo, Campinas\".")
+                    provider = "painel"
+                else:
+                    reply, provider = web_search.format_places(res), "OpenStreetMap"
+            else:
+                history = conv["messages"][-4:]  # contexto para perguntas de seguimento ("e amanhã?")
+                res = web_search.search(said, history)
+                reply, provider = web_search.format_search(res), res["provider"]
+        except web_search.WebError as e:
+            if route == "web":
+                return False  # sem buscador: a IA de conversa responde (e o status avisa)
+            reply, provider, note = f"⚠ {e}", "painel", str(e)
+        conversations.append(cid, keys, "user", content, display=req.get("display"), intent="skip")
+        conv = conversations.append(cid, keys, "assistant", reply, meta={"provider": provider, "model": route})
+        self._send_json(200, {"ok": True, "reply": reply, "provider": provider, "model": route, "kind": route,
+                              "conversation_id": cid, "title": conv["title"], "intent": None, "note": note,
+                              "need_location": route == "places" and provider == "painel" and not note,
+                              "extra_calls": extra_calls, "user_index": len(conv["messages"]) - 2,
+                              "reply_index": len(conv["messages"]) - 1})
+        return True
 
     def _handle_conversation_action(self, req):
         me, admin, action, cid = self._owner(), self._is_admin(), req.get("action"), req.get("id") or ""
@@ -930,6 +981,12 @@ class StudioHandler(BaseHTTPRequestHandler):
                 return
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             self._send_json(200, router.status(refresh=query.get("refresh", ["0"])[0] == "1"))
+            return
+
+        if parsed_path == "/api/demo":
+            if not self._guard_any(["chat", "imagens"]):
+                return
+            self._send_json(200, {"ok": True, **router.demo_status()})
             return
 
         if parsed_path == "/api/models/availability":

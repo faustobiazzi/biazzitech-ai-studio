@@ -114,6 +114,16 @@ class RouterTest(unittest.TestCase):
         router.edit_provider("groq", {"disabled": True})
         self.assertFalse(router.model_availability(["groq/x"])["groq/x"]["show"])
 
+    def test_demo_mode_without_text_keys(self):
+        st = router.demo_status()
+        self.assertTrue(st["demo"])
+        self.assertFalse(st["image_key"])
+        self.assertEqual([k["id"] for k in st["free_keys"]], ["gemini", "groq", "openrouter"])
+        self.assertTrue(all(k["url"].startswith("https://") for k in st["free_keys"]))
+        write_env(GROQ_API_KEY="gsk_x")
+        router.load_env()
+        self.assertFalse(router.demo_status()["demo"])
+
     # ------------------------------------------------------------ esperas (cooldown)
     def test_parse_duration(self):
         self.assertEqual(router._parse_duration("2m30s"), 150)

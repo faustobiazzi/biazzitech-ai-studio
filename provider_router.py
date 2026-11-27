@@ -1185,6 +1185,25 @@ def usable(pid):
     return False, False, reasons[0]
 
 
+DEMO_TEXT_KEYS = ("gemini", "groq", "openrouter")  # chaves grátis sugeridas, na ordem
+
+
+def demo_status():
+    """Modo demo = nenhum provedor de texto utilizável (instalação sem chaves). Imagens continuam funcionando:
+    o Flux/Pollinations gera sem chave (com marca d'água e limite menor)."""
+    load_env()
+    text_ok = any(usable(b)[0] for b in provider_order(with_instances=False))
+    return {
+        "demo": not text_ok,
+        "text_ok": text_ok,
+        "image_key": bool(provider_key("pollinations")),
+        "free_keys": [{"id": p, "label": PROVIDERS[p]["label"], "url": PROVIDERS[p].get("key_url")}
+                      for p in DEMO_TEXT_KEYS if p in PROVIDERS],
+        "pollinations_url": PROVIDERS.get("pollinations", {}).get("key_url"),
+        "ollama_url": PROVIDERS.get("ollama", {}).get("key_url"),
+    }
+
+
 def model_availability(models):
     """Para cada nome de modelo das listas do painel: o provedor dono e se ele deve aparecer.
     'auto' e outros sem dono aparecem se houver pelo menos um provedor de texto utilizável."""

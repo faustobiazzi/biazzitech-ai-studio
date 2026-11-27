@@ -22,6 +22,7 @@ Estúdio de IA para quem cria jogos e histórias: código (Godot 4 / GDScript, L
 > - **Listas de modelos e geradores** mostram só o que tem chave funcionando e está ativo.
 > - **⏹ Cancelar** pedidos, **Reiniciar servidor** pelo painel (administrador), galeria que continua lá ao recarregar.
 > - **Assistente Livre** é o modo padrão do chat.
+> - **Modo demo**: instalado sem nenhuma chave, o painel já gera imagens (Flux/Pollinations sem chave) e mostra o passo a passo para criar uma chave grátis para o chat.
 
 > ### ☕ Pague um cafézinho pro dev!
 > O BiazziTech AI Studio é um projeto independente, feito com dedicação e sem anúncios. Se ele te ajudou, apoie a evolução com qualquer valor:
@@ -92,6 +93,16 @@ O instalador faz 6 passos e pergunta o que precisar:
 
 Outras chaves aceitas: `-DeepSeekKey`, `-PollinationsKey`, `-OpenRouterKey`, `-XaiKey`, `-OllamaCloudKey`, `-PixelLabKey`, `-RetroDiffusionKey`, `-ScenarioKey` (formato `CHAVE:SEGREDO`), `-PixAIKey`.
 
+### Modo demo (sem nenhuma chave)
+
+Dá para abrir o painel sem cadastrar chave nenhuma — nada fica ligado à conta de ninguém:
+
+- **Imagens funcionam na hora**: o Flux/Pollinations gera sem chave (com marca d'água, limite menor e só os modelos Flux e Turbo). Uma chave grátis do Pollinations tira a marca.
+- **Chat, auxiliar de prompt e memória** precisam de pelo menos uma chave de texto. O painel mostra uma faixa **🎮 Modo demo** com links para criar uma chave **grátis** (Google Gemini, Groq ou OpenRouter — uns 2 minutos, sem cartão) e um botão para colar na aba **Provedores**. A faixa some sozinha quando a chave funciona.
+- **Sem internet ou sem conta:** IA no próprio PC com o Ollama (texto) e o Stable Diffusion local (imagens), se a máquina aguentar.
+
+Por que não vem uma chave pronta? Toda chave pertence a uma conta; uma chave publicada num repositório é achada por robôs em horas e acaba gasta ou cancelada.
+
 ---
 
 ## 2. Como abrir
@@ -110,6 +121,12 @@ Outras chaves aceitas: `-DeepSeekKey`, `-PollinationsKey`, `-OpenRouterKey`, `-X
 
 ### Código & Lore
 Escolha o **Modelo** (ou *Automático* = rodízio) e o **Modo** (Assistente Livre — o padrão —, Godot 4.7 GDScript, Lua, Python, C#, Lore & Diálogos). Cada resposta mostra qual provedor/modelo respondeu. As listas mostram só os modelos com chave funcionando e ativos (os que estão em espera curta aparecem marcados). **⏹ Cancelar** interrompe o pedido em andamento.
+
+**🌐 Busca na internet e lugares perto** (seletor *Web*: automático, sempre buscar ou desligada):
+- No automático, o **Assistente Livre** manda para a busca as perguntas de fatos atuais — *"cotação do dólar hoje"*, *"quem ganhou o jogo ontem"*, *"horário de funcionamento do..."* — e responde resumido, **com as fontes** (links). Quem pesquisa é a Groq (GPT-OSS com busca embutida) e, de reserva, o Gemini com a busca do Google; usa as chaves que você já tem. Se nenhum buscador responder, a IA de conversa responde normalmente. Os modos de código e lore só buscam com *sempre buscar*.
+- **"Onde tem uma padaria aqui perto?"** — lista os lugares mais próximos (nome, distância, endereço, horário quando o mapa tem, links de mapa e rota) pelo **OpenStreetMap**, sem chave e sem IA. Usa a **localização do navegador** (ele pede permissão; a posição vai só para a busca no mapa e não fica guardada) ou o lugar que você escrever: *"farmácia perto de Barão Geraldo, Campinas"*.
+- **A localização só funciona com HTTPS** (ou no próprio PC, em `localhost`): pela rede em `http://IP:porta` o navegador bloqueia, e a barra de status avisa para habilitar o HTTPS ([seção 8](#8-usuários-senhas-rede-e-porta)). Sem ela, escreva o bairro e a cidade.
+- Com as opções **🤖 Com ajuda da IA** ligadas, perguntas sem sinal claro ("quem é o presidente da Nintendo?") passam por uma IA que decide se vale buscar (1 consulta extra).
 
 **Conversas:** cada conversa fica guardada no servidor e volta quando você recarrega a página ou entra de outro aparelho. O seletor **Conversa** lista as suas (com data), **+ Nova** começa outra, **Limpar** apaga as mensagens e a memória, 🗑 apaga a conversa.
 
@@ -353,7 +370,7 @@ Com `cert.pem` e `key.pem` nessa pasta e a rede ligada, o painel passa a atender
 
 1. Numa máquina **com** Python, rode `bat\Gerar_EXE.bat`. Na primeira vez ele pede para instalar o **PyInstaller**.
 2. Saída: `dist\BiazziTech AI Studio.exe` (um arquivo, ~9 MB). Copie para qualquer Windows 10/11 e dê duplo-clique.
-3. Cadastre as chaves pela aba **Provedores** (ficam em `%USERPROFILE%\.env` daquele PC).
+3. Cadastre as chaves pela aba **Provedores** (ficam em `%USERPROFILE%\.env` daquele PC). Sem chave nenhuma ele abre em [modo demo](#modo-demo-sem-nenhuma-chave): imagens já funcionam.
 
 O `.exe` tem o painel, o rodízio, as imagens e o controle de acesso. A integração com o Antigravity e o Ollama ficam com o instalador em PowerShell. Alguns antivírus estranham `.exe` do PyInstaller; se bloquear, libere o arquivo.
 
@@ -404,6 +421,7 @@ Streaming (SSE) funciona. A resposta traz o campo `provider` com quem respondeu.
 | `access_control.py` | Porta, rede, usuários e senhas |
 | `prompt_assist.py` | Auxiliar de prompt (planejar quadros, gerar prompt, corrigir prompts, descrever personagens) |
 | `conversations.py` | Conversas do chat: memória, compactação, contexto inicial, fixar e visibilidade por usuário |
+| `web_search.py` | Busca na internet com fontes (Groq/Gemini) e lugares perto (OpenStreetMap) |
 | `characters.py` | Fichas de personagem |
 | `comic_layouts.py` | Modelos de página de quadrinho |
 | `godot_export.py` | Exportação de spritesheets/tilesets para o Godot 4 |

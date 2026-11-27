@@ -174,7 +174,7 @@ Write-Host "[2/6] Instalando o BiazziTech AI Studio em $appDir..." -ForegroundCo
 New-Item -ItemType Directory -Path $appDir -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $appHome "imagens") -Force | Out-Null
 
-$tools = @("biazzitech_studio.py", "studio_server.py", "provider_router.py", "image_providers.py", "access_control.py", "doc_extract.py", "prompt_assist.py", "characters.py", "comic_layouts.py", "conversations.py", "godot_export.py", "sd_local.py", "studio_ui.html",
+$tools = @("biazzitech_studio.py", "studio_server.py", "provider_router.py", "image_providers.py", "access_control.py", "doc_extract.py", "prompt_assist.py", "characters.py", "comic_layouts.py", "conversations.py", "web_search.py", "godot_export.py", "sd_local.py", "studio_ui.html",
            "studio_mcp.py", "studio_cli.py", "free_image_gen.py", "pixai_gen.py")
 foreach ($t in $tools) {
     $src = Join-Path $sourceDir $t
@@ -334,7 +334,7 @@ if ($integrarAntigravity) {
         Copy-Item -Path (Join-Path $pluginSrc "README.md") -Destination (Join-Path $pluginDst "README.md") -Force
         Copy-Item -Path (Join-Path (Join-Path $pluginSrc "assets") "logo.svg") -Destination (Join-Path $assetsDst "logo.svg") -Force
         Get-ChildItem $sidecarDst -Filter "deepseek_*.py" -ErrorAction SilentlyContinue | Remove-Item -Force
-        foreach ($t in @("studio_server.py", "provider_router.py", "image_providers.py", "access_control.py", "doc_extract.py", "prompt_assist.py", "characters.py", "comic_layouts.py", "conversations.py", "godot_export.py", "sd_local.py", "studio_ui.html")) {
+        foreach ($t in @("studio_server.py", "provider_router.py", "image_providers.py", "access_control.py", "doc_extract.py", "prompt_assist.py", "characters.py", "comic_layouts.py", "conversations.py", "web_search.py", "godot_export.py", "sd_local.py", "studio_ui.html")) {
             Copy-Item -Path (Join-Path $sourceDir $t) -Destination (Join-Path $sidecarDst $t) -Force
         }
         if (Test-Path $uiSrc) {
