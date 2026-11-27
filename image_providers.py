@@ -382,6 +382,209 @@ def _scenario(opts):
     return _with_keys("scenario", run)
 
 
+# ---------------------------------------------------------------- novos provedores gerais (Gemini, HF, OpenAI, Together, Fal, Stability)
+
+_ASPECT_DIMS = {
+    "1:1": (1024, 1024),
+    "16:9": (1280, 720),
+    "9:16": (720, 1280),
+    "4:3": (1024, 768),
+    "3:4": (768, 1024),
+}
+
+
+def _aspect_dims(opts):
+    aspect = (opts.get("aspect") or "1:1").strip()
+    if aspect in _ASPECT_DIMS:
+        return _ASPECT_DIMS[aspect]
+    return int(opts.get("width") or 1024), int(opts.get("height") or 1024)
+
+
+def _http_raw(method, url, headers, data=None, timeout=120):
+    req = urllib.request.Request(url, data=data, headers=dict(headers), method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        text = e.read().decode("utf-8", errors="ignore")
+        if e.code in (401, 402, 403, 429):
+            raise _Retryable(e.code, text, e.headers)
+        raise ImageError(f"Erro {e.code} do provedor: {_short(text)}")
+    except Exception as e:
+        raise ImageError(f"Falha de rede: {e}")
+
+
+def _ref_mime(data):
+    ext = _ext_of(data)
+    return {".jpg": "image/jpeg", ".webp": "image/webp"}.get(ext, "image/png")
+
+
+def _gemini_image(opts):
+    models = [opts.get("model")] if opts.get("model") else [
+        "gemini-2.5-flash-image",
+        "gemini-3.1-flash-image-preview",
+        "gemini-3-pro-image-preview",
+    ]
+    aspect = (opts.get("aspect") or "1:1").strip()
+
+    def run(pid, _headers):
+        key = router.provider_key(pid)
+        parts = []
+        if opts.get("reference"):
+            parts.append({"inlineData": {"mimeType": _ref_mime(opts["reference"]), "data": _b64(opts["reference"])}})
+        parts.append({"text": opts["prompt"]})
+        body = {
+            "contents": [{"role": "user", "parts": parts}],
+            "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
+        }
+        if aspect in _ASPECT_DIMS:
+            body["generationConfig"]["imageConfig"] = {"aspectRatio": aspect}
+        last_err = None
+        for m in models:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent"
+            try:
+                _, res = _http("POST", url, {"User-Agent": router.USER_AGENT, "x-goog-api-key": key}, body, timeout=120)
+                imgs = []
+                for cand in res.get("candidates") or []:
+                    for part in (cand.get("content") or {}).get("parts") or []:
+                        inline = part.get("inlineData") or part.get("inline_data") or {}
+                        raw = _decode_b64(inline.get("data") or "")
+                        if raw:
+                            imgs.append((raw, m))
+                if imgs:
+                    return imgs
+                last_err = "Gemini não devolveu imagem na resposta."
+            except _Retryable:
+                raise
+            except ImageError as e:
+                last_err = str(e)
+        raise ImageError(last_err or "Falha ao gerar imagem no Gemini.")
+
+    return _with_keys("gemini", run)
+
+
+def _huggingface(opts):
+    model = (opts.get("model") or "black-forest-labs/FLUX.1-schnell").strip()
+    w, h = _aspect_dims(opts)
+
+    def run(pid, headers):
+        base = router.PROVIDERS[pid]["base"].rstrip("/")
+        h_req = dict(headers)
+        h_req["Content-Type"] = "application/json"
+        h_req["Accept"] = "image/png"
+        payload = json.dumps({"inputs": opts["prompt"], "parameters": {"width": w, "height": h}}).encode("utf-8")
+        _, raw = _http_raw("POST", f"{base}/{model}", h_req, payload, timeout=120)
+        if not _ext_of(raw):
+            raise ImageError("Hugging Face respondeu, mas sem imagem reconhecível.")
+        return [(raw, model.split("/")[-1])]
+
+    return _with_keys("huggingface", run)
+
+
+def _openai_image(opts):
+    model = (opts.get("model") or "gpt-image-1").strip()
+    aspect = (opts.get("aspect") or "1:1").strip()
+    size = {"16:9": "1536x1024", "4:3": "1536x1024", "9:16": "1024x1536", "3:4": "1024x1536"}.get(aspect, "1024x1024")
+
+    def run(pid, headers):
+        base = router.PROVIDERS[pid]["base"].rstrip("/")
+        _, res = _http("POST", f"{base}/images/generations", headers, {
+            "model": model,
+            "prompt": opts["prompt"],
+            "size": size,
+        }, timeout=120)
+        imgs = []
+        for item in res.get("data") or []:
+            if item.get("b64_json"):
+                raw = _decode_b64(item["b64_json"])
+                if raw:
+                    imgs.append((raw, model))
+            elif item.get("url"):
+                imgs.append((_download(item["url"]), model))
+        if not imgs:
+            raise ImageError("OpenAI não devolveu imagem.")
+        return imgs
+
+    return _with_keys("openai", run)
+
+
+def _together(opts):
+    model = (opts.get("model") or "black-forest-labs/FLUX.1-schnell-Free").strip()
+    w, h = _aspect_dims(opts)
+
+    def run(pid, headers):
+        base = router.PROVIDERS[pid]["base"].rstrip("/")
+        _, res = _http("POST", f"{base}/images/generations", headers, {
+            "model": model,
+            "prompt": opts["prompt"],
+            "width": w,
+            "height": h,
+            "response_format": "b64_json",
+        }, timeout=120)
+        imgs = []
+        for item in res.get("data") or []:
+            if item.get("b64_json"):
+                raw = _decode_b64(item["b64_json"])
+                if raw:
+                    imgs.append((raw, model.split("/")[-1]))
+            elif item.get("url"):
+                imgs.append((_download(item["url"]), model.split("/")[-1]))
+        if not imgs:
+            raise ImageError("Together não devolveu imagem.")
+        return imgs
+
+    return _with_keys("together", run)
+
+
+def _fal(opts):
+    model = (opts.get("model") or "fal-ai/flux/schnell").strip()
+    w, h = _aspect_dims(opts)
+
+    def run(pid, headers):
+        base = router.PROVIDERS[pid]["base"].rstrip("/")
+        _, res = _http("POST", f"{base}/{model}", headers, {
+            "prompt": opts["prompt"],
+            "image_size": {"width": w, "height": h},
+        }, timeout=120)
+        imgs = []
+        for item in res.get("images") or []:
+            if item.get("url"):
+                imgs.append((_download(item["url"]), model.split("/")[-1]))
+        if not imgs:
+            raise ImageError("Fal.ai não devolveu imagem.")
+        return imgs
+
+    return _with_keys("fal", run)
+
+
+def _stability(opts):
+    endpoint = (opts.get("model") or "core").strip()
+    aspect = (opts.get("aspect") or "1:1").strip()
+    if aspect not in _ASPECT_DIMS:
+        aspect = "1:1"
+
+    def run(pid, headers):
+        base = router.PROVIDERS[pid]["base"].rstrip("/")
+        boundary = f"----BiazziTech{uuid.uuid4().hex}"
+        fields = [("prompt", opts["prompt"]), ("aspect_ratio", aspect), ("output_format", "png")]
+        if opts.get("negative"):
+            fields.append(("negative_prompt", opts["negative"]))
+        chunks = []
+        for k, v in fields:
+            chunks.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode("utf-8"))
+        chunks.append(f"--{boundary}--\r\n".encode("utf-8"))
+        body = b"".join(chunks)
+        h_req = dict(headers)
+        h_req["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+        h_req["Accept"] = "image/*"
+        _, raw = _http_raw("POST", f"{base}/stable-image/generate/{endpoint}", h_req, body, timeout=120)
+        if not _ext_of(raw):
+            raise ImageError("Stability AI respondeu, mas sem imagem reconhecível.")
+        return [(raw, f"stability_{endpoint}")]
+
+    return _with_keys("stability", run)
+
+
 # ---------------------------------------------------------------- entrada
 
 def _sdlocal(opts):
@@ -392,7 +595,18 @@ def _sdlocal(opts):
         raise ImageError(str(e))
 
 
-GENERATORS = {"pixellab": _pixellab, "retrodiffusion": _retro, "scenario": _scenario, "sdlocal": _sdlocal}
+GENERATORS = {
+    "pixellab": _pixellab,
+    "retrodiffusion": _retro,
+    "scenario": _scenario,
+    "sdlocal": _sdlocal,
+    "gemini_image": _gemini_image,
+    "huggingface": _huggingface,
+    "openai_image": _openai_image,
+    "together": _together,
+    "fal": _fal,
+    "stability": _stability,
+}
 
 
 def options():

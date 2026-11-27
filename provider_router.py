@@ -55,7 +55,7 @@ PROVIDERS = {
         "key_env": "GEMINI_API_KEY",
         "key_url": "https://aistudio.google.com/apikey",
         "default_model": "gemini-flash-latest",
-        "prefer": ["gemini-flash-latest", "gemini-2.5-flash", "flash"],
+        "prefer": ["gemini-flash-latest", "gemini-3-flash-preview", "gemini-flash-lite-latest", "flash"],
         "free": True,
     },
     "groq": {
@@ -196,11 +196,45 @@ PROVIDERS.update({
         "local": True,
         "free": True,
     },
+    "huggingface": {
+        "label": "Hugging Face (FLUX.1-schnell)",
+        "base": "https://router.huggingface.co/hf-inference/models",
+        "key_env": "HF_TOKEN",
+        "key_url": "https://huggingface.co/settings/tokens",
+        "kind": "image",
+        "free": True,
+    },
+    "together": {
+        "label": "Together AI (imagens Flux)",
+        "base": "https://api.together.xyz/v1",
+        "key_env": "TOGETHER_API_KEY",
+        "key_url": "https://api.together.ai/settings/api-keys",
+        "validate_path": "/models",
+        "kind": "image",
+        "free": False,
+    },
+    "fal": {
+        "label": "Fal.ai (Flux rápido)",
+        "base": "https://fal.run",
+        "key_env": "FAL_KEY",
+        "key_url": "https://fal.ai/dashboard/keys",
+        "auth": "key",
+        "kind": "image",
+        "free": False,
+    },
+    "stability": {
+        "label": "Stability AI (SD3 / Core)",
+        "base": "https://api.stability.ai/v2beta",
+        "key_env": "STABILITY_API_KEY",
+        "key_url": "https://platform.stability.ai/account/keys",
+        "kind": "image",
+        "free": False,
+    },
 })
 
 DEFAULT_ORDER = ["gemini", "groq", "openrouter", "ollama_cloud", "deepseek", "openai", "anthropic", "xai",
                  "ollama", "pollinations"]
-IMAGE_PROVIDERS = ["pixellab", "retrodiffusion", "scenario", "sdlocal"]
+IMAGE_PROVIDERS = ["pixellab", "retrodiffusion", "scenario", "sdlocal", "huggingface", "together", "fal", "stability"]
 MAX_INSTANCES = 9
 ANTHROPIC_VERSION = "2026-10-21"
 # Modelos Claude que aceitam o fallback automático do servidor quando um pedido é recusado
@@ -605,6 +639,8 @@ def auth_headers(pid, key):
         h["X-RD-Token"] = key
     elif auth == "basic":
         h["Authorization"] = "Basic " + base64.b64encode(key.encode("utf-8")).decode("ascii")
+    elif auth == "key":
+        h["Authorization"] = f"Key {key}"
     elif key and key != "none":
         h["Authorization"] = f"Bearer {key}"
     return h
@@ -1028,6 +1064,28 @@ def strip_prefix(pid, model):
     return model
 
 
+_REPLACEMENT_PATTERNS = (
+    re.compile(r"(?:use|migrate to|replaced by|instead use|switch to|try)\s+[`'\" ]*(?:models/)?([a-zA-Z0-9][a-zA-Z0-9._:/-]{2,})", re.I),
+    re.compile(r"models/([a-zA-Z0-9][a-zA-Z0-9._:-]{2,})"),
+)
+
+
+def extract_replacement_model(error_text, current_model=""):
+    """Extrai o modelo substituto sugerido em mensagens de erro 404/descontinuação."""
+    if not error_text:
+        return None
+    cur = (current_model or "").strip().lower().removeprefix("models/")
+    for pat in _REPLACEMENT_PATTERNS:
+        for match in pat.finditer(error_text):
+            cand = match.group(1).strip(".,;:'\"`()[]")
+            low = cand.lower()
+            if not cand or low == cur or low.startswith(("http", "v1", "the ", "a ", "an ")):
+                continue
+            if "-" in cand or "." in cand or "/" in cand:
+                return cand
+    return None
+
+
 # ---------------------------------------------------------------- cooldown
 
 def _parse_duration(text):
@@ -1439,7 +1497,14 @@ def open_chat(payload, explicit_deepseek_key=None, only=None, timeout=90):
         if waited:
             attempts.append({"provider": pid, "waited": round(waited, 1)})
         mark_key_use(pid)
-        for model in models:
+        tried_models = set()
+        idx = 0
+        while idx < len(models):
+            model = models[idx]
+            idx += 1
+            if model in tried_models:
+                continue
+            tried_models.add(model)
             headers = auth_headers(pid, key)
             headers["Content-Type"] = "application/json"
             if base_id(pid) == "openrouter":
@@ -1465,8 +1530,13 @@ def open_chat(payload, explicit_deepseek_key=None, only=None, timeout=90):
                 attempts.append({"provider": pid, "model": model, "error": e.code, "message": body_text[:200]})
                 low = body_text.lower()
                 if (e.code == 429 and "upstream" in low) or e.code == 404:
-                    # problema só deste modelo (ex.: modelo grátis congestionado): tenta o próximo modelo
+                    # problema só deste modelo (ex.: modelo grátis congestionado ou descontinuado): tenta o próximo
                     _record_model_issue(pid, model, e.code, body_text, 600 if e.code == 429 else 86400)
+                    if e.code == 404:
+                        _update(pid, lambda s: s.pop("discovered", None))
+                        repl = extract_replacement_model(body_text, model)
+                        if repl and repl not in tried_models and repl not in models:
+                            models.append(repl)
                     continue
                 _record_error(pid, model, e.code, body_text or str(e), e.headers, body_text)
                 if base_id(pid) != "pollinations" or e.code in (401, 402, 403):

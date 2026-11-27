@@ -1214,8 +1214,23 @@ async function onAssistFile(input) {
 
 // ----- geradores de pixel art
 let imgOptions = null;
+const GEN_PROVIDERS = new Set(['gemini_image', 'huggingface', 'openai_image', 'together', 'fal', 'stability']);
+const GEN_DEFAULT_MODELS = {
+  gemini_image: 'gemini-2.5-flash-image',
+  huggingface: 'black-forest-labs/FLUX.1-schnell',
+  openai_image: 'gpt-image-1',
+  together: 'black-forest-labs/FLUX.1-schnell-Free',
+  fal: 'fal-ai/flux/schnell',
+  stability: 'core',
+};
 const PIX_HINTS = {
   pollinations: 'Descreva a arte (ex: dark dieselpunk bunker corridor, eerie green emergency light, gothic soldier)...',
+  gemini_image: 'Descreva a cena (aceita imagem de referência anexada acima)...',
+  huggingface: 'Descreva a imagem para o FLUX.1-schnell (em inglês costuma renderizar melhor)...',
+  openai_image: 'Descreva a imagem para o gpt-image-1...',
+  together: 'Descreva a imagem para o Together AI (Flux)...',
+  fal: 'Descreva a imagem para o Fal.ai (Flux rápido)...',
+  stability: 'Descreva a imagem para o Stability AI (core / ultra / sd3)...',
   pixellab: 'Descreva o sprite/personagem em inglês (ex: knight with red cape, side view). Tileset: "grass | dirt path". Animar: a ação (walking).',
   retrodiffusion: 'Descreva em inglês (ex: small slime monster, idle). Estilos "Animar referência" usam a imagem de referência.',
   scenario: 'Descreva o asset. Informe o modelId do modelo da Scenario ao lado.',
@@ -1231,11 +1246,18 @@ async function loadImgOptions() {
 async function onImgProviderChange() {
   const prov = document.getElementById('img-provider').value;
   const sd = prov === 'sdlocal' || isRemoteSd(prov);
-  const pix = prov !== 'pollinations' && !sd;
+  const gen = GEN_PROVIDERS.has(prov);
+  const pix = prov !== 'pollinations' && !sd && !gen;
   document.getElementById('pix-controls').style.display = pix ? '' : 'none';
   document.getElementById('poll-controls').style.display = prov === 'pollinations' ? '' : 'none';
+  document.getElementById('gen-controls').style.display = gen ? '' : 'none';
   document.getElementById('sd-controls').style.display = sd ? '' : 'none';
   document.getElementById('pix-model-id').style.display = prov === 'scenario' ? '' : 'none';
+  if (gen) {
+    const gm = document.getElementById('gen-model');
+    gm.value = '';
+    gm.placeholder = GEN_DEFAULT_MODELS[prov] || 'padrão do provedor';
+  }
   document.getElementById('img-input').placeholder = PIX_HINTS[prov] || '';
   if (!sd) document.getElementById('lora-panel').style.display = 'none';
   if (sd) { await loadSdLocal(true); return; }
@@ -1378,6 +1400,13 @@ function currentImageRequest(prompt, aspectOverride) {
   if (provider === 'pollinations') {
     req.model = document.getElementById('img-model').value;
     req.aspect = aspectOverride || document.getElementById('img-aspect').value;
+  } else if (GEN_PROVIDERS.has(provider)) {
+    const gm = document.getElementById('gen-model').value.trim();
+    if (gm) req.model = gm;
+    req.aspect = aspectOverride || document.getElementById('gen-aspect').value;
+    const r0 = refs[0];
+    if (r0 && r0.name) req.reference_name = r0.name;
+    else if (r0) req.reference_data = r0.data;
   } else if (provider === 'sdlocal' || isRemoteSd(provider)) {
     req.model = document.getElementById('sd-model').value;
     req.aspect = aspectOverride || document.getElementById('sd-aspect').value;

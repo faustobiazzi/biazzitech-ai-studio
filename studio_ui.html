@@ -191,11 +191,29 @@
     <label for="img-provider">Gerador:</label>
     <select id="img-provider" onchange="onImgProviderChange()">
       <option value="pollinations">Flux / Pollinations (arte geral)</option>
+      <option value="gemini_image">Google Gemini (imagem + referência)</option>
+      <option value="huggingface">Hugging Face (FLUX.1-schnell)</option>
+      <option value="openai_image">OpenAI (gpt-image-1)</option>
+      <option value="together">Together AI (Flux)</option>
+      <option value="fal">Fal.ai (Flux rápido)</option>
+      <option value="stability">Stability AI (SD3 / Core)</option>
       <option value="pixellab">PixelLab (sprites, personagens, tilesets)</option>
       <option value="retrodiffusion">Retro Diffusion (pixel art, animações)</option>
       <option value="scenario">Scenario (modelo próprio)</option>
       <option value="sdlocal">Stable Diffusion local (offline, LoRAs)</option>
     </select>
+    <span id="gen-controls" style="display:none" class="inline-controls">
+      <label for="gen-model">Modelo:</label>
+      <input id="gen-model" placeholder="padrão do provedor" style="width:210px">
+      <label for="gen-aspect">Proporção:</label>
+      <select id="gen-aspect">
+        <option value="1:1">1:1 (1024x1024)</option>
+        <option value="16:9">16:9 (1280x720)</option>
+        <option value="9:16">9:16 (720x1280)</option>
+        <option value="4:3">4:3 (1024x768)</option>
+        <option value="3:4">3:4 (768x1024)</option>
+      </select>
+    </span>
     <span id="sd-controls" style="display:none" class="inline-controls">
       <label for="sd-model">Modelo:</label>
       <select id="sd-model"></select>
