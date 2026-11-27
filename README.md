@@ -15,6 +15,12 @@ Estúdio de IA para quem cria jogos e histórias: código (Godot 4 / GDScript, L
 
 ![Chat](docs/img/01-chat.png)
 
+> ### Novidades da 1.3.0
+> - **🌐 Busca na internet com fontes** (Groq com busca embutida; Gemini com busca do Google de reserva) e **📍 lugares perto** pelo OpenStreetMap, com a localização do navegador — sem chave e sem IA.
+> - **Modo demo**: sem nenhuma chave, as imagens já funcionam e o painel ensina a criar uma chave grátis para o chat.
+> - **App instalável (PWA)** e layout para celular; **Android pelo Termux**, com o servidor rodando no próprio celular.
+> - **Linux**: pacote **`.deb`** (menu de aplicativos e comando `biazzitech-studio`), testado num Ubuntu a cada versão.
+>
 > ### Novidades da 1.2.0
 > - **Conversas guardadas no servidor**, por usuário, com 🧠 **memória** (compactar, editar, limpar), **contexto inicial** resgatado quando você reclama de perda de contexto, **redefinição** quando você diz que o contexto mudou (com **desfazer**) e 📌 **mensagens fixadas**. Opcional: a IA confirma a intenção e tira só o que conflita (gasta consulta extra; o chat pergunta antes).
 > - **Usuários**: cada um vê só as próprias conversas e imagens; administradores veem as de todos.

@@ -176,7 +176,7 @@ def build(version, out_dir):
 
 def main():
     ap = argparse.ArgumentParser(description="Gera o .deb do BiazziTech AI Studio")
-    ap.add_argument("--versao", default="1.2.0")
+    ap.add_argument("--versao", default="1.3.0")
     ap.add_argument("--saida", default=os.path.join(ROOT, "dist"))
     args = ap.parse_args()
     path, n = build(args.versao, args.saida)
