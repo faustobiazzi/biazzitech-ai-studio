@@ -31,8 +31,11 @@ def write_env(**values):
 
 
 def clear_data():
-    """Apaga os arquivos de dados (estado do rodízio, usuários, personagens...)."""
+    """Apaga os arquivos de dados (estado do rodízio, usuários, personagens, imagens...)."""
+    import shutil
     for name in os.listdir(DATA):
         p = os.path.join(DATA, name)
         if os.path.isfile(p):
             os.remove(p)
+        elif os.path.isdir(p):
+            shutil.rmtree(p, ignore_errors=True)

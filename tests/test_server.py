@@ -165,6 +165,73 @@ class ServerTest(unittest.TestCase):
             studio_server.schedule_restart = orig_restart
             studio_server.prompt_assist._ask = orig_ask
 
+    def test_gallery_persistence_sidecar_json_and_no_orphans(self):
+        import os
+        import struct
+        import zlib
+        import base64
+
+        def make_png_bytes(w, h, color=b"\x10\x20\x30\xff"):
+            raw = b"".join(b"\x00" + color * w for _ in range(h))
+            def chunk(t, d):
+                return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+            return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+                    + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+        out_dir = studio_server.get_output_images_dir()
+        # 1) Imagem antiga sem .json (ex.: studio_animagine_1795738767.jpg) + um .json órfão sem imagem
+        legacy_img = os.path.join(out_dir, "studio_animagine_1795738767.png")
+        with open(legacy_img, "wb") as f:
+            f.write(make_png_bytes(12, 8))
+        orphan_json = os.path.join(out_dir, "fantasma_sem_imagem.json")
+        with open(orphan_json, "w", encoding="utf-8") as f:
+            json.dump({"file_name": "fantasma_sem_imagem.png"}, f)
+
+        st, _, raw = self.call("/api/images")
+        self.assertEqual(st, 200)
+        imgs = json.loads(raw)["images"]
+        self.assertEqual([i["file_name"] for i in imgs], ["studio_animagine_1795738767.png"])
+        self.assertEqual((imgs[0]["width"], imgs[0]["height"]), (12, 8))
+        self.assertEqual(imgs[0]["model"], "community/vendouple/animagine")
+        # O .json órfão sumiu e a imagem antiga ganhou seu .json anexo de mesmo nome
+        self.assertFalse(os.path.exists(orphan_json))
+        legacy_json = os.path.join(out_dir, "studio_animagine_1795738767.json")
+        self.assertTrue(os.path.isfile(legacy_json))
+
+        # 2) Nova imagem salva via /api/image/upload cria imagem + .json com dados de criação
+        durl = "data:image/png;base64," + base64.b64encode(make_png_bytes(16, 10)).decode()
+        st, _, raw = self.call("/api/image/upload", {"data_url": durl, "label": "quadro_teste", "prompt": "90s manga hero"})
+        self.assertEqual(st, 200)
+        up = json.loads(raw)
+        up_img = os.path.join(out_dir, up["file_name"])
+        up_json = os.path.splitext(up_img)[0] + ".json"
+        self.assertTrue(os.path.isfile(up_img) and os.path.isfile(up_json))
+        with open(up_json, encoding="utf-8") as f:
+            meta1 = json.load(f)
+        self.assertEqual((meta1["prompt"], meta1["width"], meta1["height"], meta1["modified"]), ("90s manga hero", 16, 10, False))
+
+        # 3) Se a imagem for alterada no disco, o .json anexo é atualizado (dimensões/hash/modified) preservando o prompt
+        with open(up_img, "wb") as f:
+            f.write(make_png_bytes(24, 18, b"\xaa\xbb\xcc\xff"))
+        st, _, raw = self.call("/api/images")
+        self.assertEqual(st, 200)
+        with open(up_json, encoding="utf-8") as f:
+            meta2 = json.load(f)
+        self.assertEqual((meta2["prompt"], meta2["width"], meta2["height"], meta2["modified"]), ("90s manga hero", 24, 18, True))
+        self.assertNotEqual(meta1["sha256"], meta2["sha256"])
+
+        # 4) Se a imagem for excluída via /api/image/delete, o .json também é removido
+        st, _, _ = self.call("/api/image/delete", {"name": up["file_name"]})
+        self.assertEqual(st, 200)
+        self.assertFalse(os.path.exists(up_img))
+        self.assertFalse(os.path.exists(up_json))
+
+        # 5) Se a imagem for apagada manualmente no disco, a próxima sincronização apaga o .json órfão
+        os.remove(legacy_img)
+        st, _, raw = self.call("/api/images")
+        self.assertEqual(json.loads(raw)["images"], [])
+        self.assertFalse(os.path.exists(legacy_json))
+
 
 if __name__ == "__main__":
     unittest.main()

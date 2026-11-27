@@ -15,6 +15,7 @@ function switchTab(name, btn) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('view-' + name).classList.add('active');
   btn.classList.add('active');
+  if (name === 'image') loadGallery();
 }
 
 function clearChat() {
@@ -246,7 +247,8 @@ function imageToPngBlob(img) {
 }
 
 async function shareImage(data, img, prompt) {
-  const blob = await (await fetch(data.data_url)).blob();
+  const src = data.data_url || data.url;
+  const blob = await (await fetch(src)).blob();
   const file = new File([blob], data.file_name || 'imagem.jpg', { type: blob.type || 'image/jpeg' });
   // 1) Menu "Compartilhar" do sistema (Windows/Android), quando o navegador permite
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
@@ -267,17 +269,22 @@ async function shareImage(data, img, prompt) {
   } catch (e) {}
   // 3) Último recurso: baixar o arquivo
   const a = document.createElement('a');
-  a.href = data.data_url;
+  a.href = src;
   a.download = data.file_name || 'imagem.jpg';
   a.click();
   setStatus('Seu navegador não permite compartilhar daqui; a imagem foi baixada.');
 }
 
 function buildImageCard(data, prompt) {
+  const effectivePrompt = prompt !== undefined ? prompt : (data.prompt || '');
+  const src = data.data_url || data.url;
   const card = el('div', 'img-card');
+  if (data.file_name) card.dataset.file = data.file_name;
+  if (data.url) card.dataset.url = data.url;
   const img = el('img');
-  img.src = data.data_url;
-  img.alt = prompt || 'Arte gerada';
+  img.src = src;
+  img.loading = 'lazy';
+  img.alt = effectivePrompt || 'Arte gerada';
   img.title = 'Clique para abrir';
   img.style.cursor = 'zoom-in';
   card.appendChild(img);
@@ -308,7 +315,7 @@ function buildImageCard(data, prompt) {
 
   bShare.onclick = async () => {
     bShare.disabled = true;
-    try { await shareImage(data, img, prompt); }
+    try { await shareImage(data, img, effectivePrompt); }
     catch (e) { setStatus('Falha ao compartilhar: ' + e.message); }
     finally { bShare.disabled = false; }
   };
@@ -327,7 +334,7 @@ function buildImageCard(data, prompt) {
 
   // Usar esta imagem como referência / animar com a PixelLab
   const bRef = el('button', 'mini-btn', 'Usar como referência');
-  bRef.onclick = () => setRef(data.data_url, data.file_name, data.file_name);
+  bRef.onclick = () => setRef(src, data.file_name, data.file_name);
   const bAnim = el('button', 'mini-btn', 'Animar');
   bAnim.title = 'Anima esta imagem com a PixelLab (precisa de chave da PixelLab)';
   bAnim.onclick = async () => {
@@ -339,8 +346,7 @@ function buildImageCard(data, prompt) {
     try {
       const d = await requestImages({ provider: 'pixellab', mode: 'animar', prompt: action, reference_name: data.file_name,
                                       transparent: true, frames: 8 }, signal);
-      const gal = document.getElementById('image-gallery');
-      (d.images || [d]).slice().reverse().forEach(im => gal.prepend(buildImageCard(im, action)));
+      (d.images || [d]).slice().reverse().forEach(im => prependGalleryCard(im, action));
       setStatus((d.images || [d]).length + ' quadro(s) da animação salvos.');
     } catch (e) {
       if (!isAbort(e)) { alert('Não deu para animar: ' + e.message); setStatus('Falha ao animar'); }
@@ -373,6 +379,55 @@ function buildImageCard(data, prompt) {
   footer.appendChild(actions);
   card.appendChild(footer);
   return card;
+}
+
+function prependGalleryCard(im, prompt) {
+  const gal = document.getElementById('image-gallery');
+  if (!gal) return;
+  if (im.file_name) {
+    gal.querySelectorAll('.img-card').forEach(c => { if (c.dataset.file === im.file_name) c.remove(); });
+  }
+  gal.prepend(buildImageCard(im, prompt));
+}
+
+let _loadingGallery = false;
+async function loadGallery(notify) {
+  if (_loadingGallery) return;
+  _loadingGallery = true;
+  try {
+    const r = await fetch('/api/images', { cache: 'no-store' });
+    if (!r.ok) return;
+    const d = await r.json();
+    const gal = document.getElementById('image-gallery');
+    if (!gal) return;
+    const list = d.images || [];
+    const diskMap = new Map(list.map(im => [im.file_name, im]));
+    // Remove cartões de imagens que foram apagadas no disco
+    [...gal.querySelectorAll('.img-card')].forEach(c => {
+      const fn = c.dataset.file;
+      if (fn && !diskMap.has(fn)) c.remove();
+    });
+    const byFile = new Map([...gal.querySelectorAll('.img-card')].filter(c => c.dataset.file).map(c => [c.dataset.file, c]));
+    let cursor = gal.firstElementChild;
+    for (const im of list) {
+      let card = byFile.get(im.file_name);
+      if (card) {
+        // Se a imagem foi editada/alterada no disco, reconstrói o cartão com o cache-buster novo
+        if (im.url && card.dataset.url && card.dataset.url !== im.url) {
+          const fresh = buildImageCard(im, im.prompt || '');
+          card.replaceWith(fresh);
+          card = fresh;
+        }
+        if (card === cursor) cursor = cursor.nextElementSibling;
+      } else {
+        card = buildImageCard(im, im.prompt || '');
+        gal.insertBefore(card, cursor || null);
+      }
+    }
+    if (notify) setStatus(list.length + ' imagem(ns) sincronizada(s) na galeria.');
+  } catch (e) {} finally {
+    _loadingGallery = false;
+  }
 }
 
 function prompt_(msg, def) { return window.prompt(msg, def); }
@@ -624,8 +679,7 @@ async function generatePanel(i, btn, thumb, sharedSignal) {
   try {
     const data = await requestImages(req, signal);
     const list = data.images || [data];
-    const gal = document.getElementById('image-gallery');
-    list.slice().reverse().forEach(im => gal.prepend(buildImageCard(im, prompt)));
+    list.slice().reverse().forEach(im => prependGalleryCard(im, prompt));
     pn.result = list[0];
     thumb.src = list[0].data_url; thumb.style.display = '';
     btn.textContent = 'Gerar de novo';
@@ -706,7 +760,7 @@ async function montagePage(btn) {
       body: JSON.stringify({ data_url: dataUrl, label: 'pagina_quadros', prompt: currentPlan.instruction || '' }) });
     const d = await r.json().catch(() => ({}));
     if (!r.ok || !d.ok) throw new Error(d.message || ('HTTP ' + r.status));
-    document.getElementById('image-gallery').prepend(buildImageCard(d, currentPlan.instruction || 'página'));
+    prependGalleryCard(d, currentPlan.instruction || 'página');
     setStatus('Página montada com ' + done.length + ' quadro(s) e salva em ' + d.saved_path);
   } catch (e) {
     alert('Não deu para montar a página: ' + e.message);
@@ -1051,8 +1105,7 @@ async function generateImage(opts) {
   try {
     const data = await requestImages(req, signal);
     const list = data.images || [data];
-    const gal = document.getElementById('image-gallery');
-    list.slice().reverse().forEach(im => gal.prepend(buildImageCard(im, prompt)));
+    list.slice().reverse().forEach(im => prependGalleryCard(im, prompt));
     setStatus(list.length > 1 ? list.length + ' imagens salvas em ' + list[0].saved_path.replace(/[^\\/]+$/, '')
                               : 'Imagem salva em ' + list[0].saved_path);
   } catch (err) {
@@ -1830,7 +1883,7 @@ async function montageLayout(btn) {
       body: JSON.stringify({ data_url: dataUrl, label: 'pagina_' + lay.id, prompt: currentPlan.instruction || '' }) });
     const d = await r.json().catch(() => ({}));
     if (!r.ok || !d.ok) throw new Error(d.message || ('HTTP ' + r.status));
-    document.getElementById('image-gallery').prepend(buildImageCard(d, currentPlan.instruction || 'página'));
+    prependGalleryCard(d, currentPlan.instruction || 'página');
     const missing = slots.filter(s => !(s.pn && s.pn.result)).length;
     setStatus('Página "' + lay.name + '" montada' + (missing ? ' (' + missing + ' quadro(s) ainda vazios)' : '') + ' e salva em ' + d.saved_path);
   } catch (e) {
@@ -2060,7 +2113,7 @@ function openGodot(data) {
   document.getElementById('godot-overlay').style.display = 'flex';
   const body = document.getElementById('godot-body');
   body.innerHTML = '';
-  const img = el('img', 'godot-preview'); img.src = data.data_url;
+  const img = el('img', 'godot-preview'); img.src = data.data_url || data.url;
   const canvas = el('canvas', 'godot-preview');
   const box = el('div', 'modal-box'); box.style.cssText = 'border:none;padding:0;width:100%';
   const grid = el('div', 'godot-grid');
@@ -2249,6 +2302,7 @@ async function loadMe() {
     const first = [...document.querySelectorAll('.tab-btn[data-tab]')].find(b => b.style.display !== 'none');
     if (first) first.click();
   }
+  if (vis.image) loadGallery(false);
   if (vis.providers) { loadProviders(true); setInterval(() => loadProviders(false), 15000); }
   // ?tab=image|providers|access abre direto numa aba
   const want = new URLSearchParams(location.search).get('tab');

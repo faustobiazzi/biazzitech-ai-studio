@@ -14,6 +14,8 @@ import sys
 import json
 import time
 import base64
+import struct
+import hashlib
 import socket
 import threading
 import urllib.parse
@@ -84,6 +86,7 @@ def get_output_images_dir() -> str:
 IMAGE_NAME_RE = re.compile(r"^[\w.-]+\.(png|jpe?g|webp|gif)$", re.IGNORECASE)
 IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
                ".gif": "image/gif"}
+_gallery_lock = threading.RLock()
 
 
 def resolve_output_image(name) -> str:
@@ -95,6 +98,326 @@ def resolve_output_image(name) -> str:
     if os.path.dirname(path) != base or not os.path.isfile(path):
         return None
     return path
+
+
+def sidecar_json_path(img_path: str) -> str:
+    """Caminho do .json anexo de uma imagem (mesmo nome-base na mesma pasta)."""
+    return os.path.splitext(img_path)[0] + ".json"
+
+
+def _image_dimensions(data: bytes):
+    """Extrai (largura, altura) de PNG, JPEG, GIF ou WEBP usando só a biblioteca padrão."""
+    if not data or len(data) < 16:
+        return 0, 0
+    try:
+        if data[:8] == b"\x89PNG\r\n\x1a\n" and data[12:16] == b"IHDR" and len(data) >= 24:
+            return struct.unpack(">II", data[16:24])
+        if data[:6] in (b"GIF87a", b"GIF89a"):
+            return struct.unpack("<HH", data[6:10])
+        if data[:4] == b"RIFF" and data[8:12] == b"WEBP" and len(data) >= 30:
+            chunk = data[12:16]
+            if chunk == b"VP8 " and len(data) >= 30:
+                w, h = struct.unpack("<HH", data[26:30])
+                return w & 0x3FFF, h & 0x3FFF
+            if chunk == b"VP8L" and len(data) >= 25:
+                b0, b1, b2, b3 = data[21:25]
+                return 1 + (((b1 & 0x3F) << 8) | b0), 1 + (((b3 & 0x0F) << 10) | (b2 << 2) | ((b1 & 0xC0) >> 6))
+            if chunk == b"VP8X" and len(data) >= 30:
+                w = 1 + int.from_bytes(data[24:27], "little")
+                h = 1 + int.from_bytes(data[27:30], "little")
+                return w, h
+        if data[:2] == b"\xff\xd8":
+            i, n = 2, len(data)
+            sof_markers = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
+            while i + 1 < n:
+                if data[i] != 0xFF:
+                    i += 1
+                    continue
+                while i < n and data[i] == 0xFF:
+                    i += 1
+                if i >= n:
+                    break
+                marker = data[i]
+                i += 1
+                if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
+                    continue
+                if i + 2 > n:
+                    break
+                seg_len = struct.unpack(">H", data[i:i + 2])[0]
+                if seg_len < 2 or i + seg_len > n:
+                    break
+                if marker in sof_markers and seg_len >= 7:
+                    h, w = struct.unpack(">HH", data[i + 3:i + 7])
+                    return w, h
+                i += seg_len
+    except Exception:
+        pass
+    return 0, 0
+
+
+def _infer_legacy_meta(fname: str) -> dict:
+    """Infere metadados básicos para imagens antigas que já estavam em imagens/ antes do .json anexo."""
+    stem = os.path.splitext(fname)[0]
+    low = stem.lower()
+    if low.startswith("studio_"):
+        core = re.sub(r"_\d{9,}(?:_\d+)?$", "", stem[len("studio_"):])
+        known = {
+            "animagine": ("pollinations", "community/vendouple/animagine", {"model": "anime"}),
+            "flux_1-schnell": ("pollinations", "black-forest-labs/flux.1-schnell", {"model": "flux"}),
+            "flux_1_1-pro": ("pollinations", "black-forest-labs/flux.1.1-pro", {"model": "flux-pro"}),
+            "flux_2-flex": ("pollinations", "black-forest-labs/flux.2-flex", {"model": "flux-flex"}),
+            "z-image-turbo": ("pollinations", "tongyi-mai/z-image-turbo", {"model": "turbo"}),
+        }
+        if core.lower() in known:
+            prov, mod, st = known[core.lower()]
+            return {"provider": prov, "model": mod, "settings": st}
+        return {"provider": "pollinations", "model": core or "studio", "settings": {}}
+    if low.startswith("pagina"):
+        return {"provider": "montagem", "model": "página montada", "settings": {}}
+    if low.startswith("pixai_"):
+        return {"provider": "pixai", "model": "PixAI", "settings": {}}
+    for p in ("sdlocal", "pixellab", "retrodiffusion", "scenario"):
+        if low.startswith(p + "_"):
+            return {"provider": p, "model": "SD local" if p == "sdlocal" else p, "settings": {}}
+    return {"provider": "", "model": stem, "settings": {}}
+
+
+def _write_json_atomic(path: str, payload: dict):
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def _unique_output_image_path(stem: str, ext: str) -> str:
+    """Garante nome-base único em imagens/ (uma imagem <-> um .json de mesmo nome-base, sem colisão)."""
+    out_dir = get_output_images_dir()
+    clean_stem = re.sub(r"[^\w.-]", "_", stem).strip("._")[:80] or "imagem"
+    existing_stems = set()
+    try:
+        for entry in os.listdir(out_dir):
+            if IMAGE_NAME_RE.match(entry) or (entry.lower().endswith(".json") and not entry.endswith(".tmp")):
+                existing_stems.add(os.path.splitext(entry)[0].lower())
+    except OSError:
+        pass
+    candidate = clean_stem
+    n = 2
+    while candidate.lower() in existing_stems:
+        candidate = f"{clean_stem}_{n}"
+        n += 1
+    return os.path.join(out_dir, candidate + ext)
+
+
+def _public_gallery_item(img_path: str, meta: dict) -> dict:
+    fname = os.path.basename(img_path)
+    mtime_ns = meta.get("file_mtime_ns") or 0
+    return {
+        "file_name": fname,
+        "saved_path": img_path,
+        "json_path": sidecar_json_path(img_path),
+        "url": f"/imagens/{urllib.parse.quote(fname)}" + (f"?v={mtime_ns}" if mtime_ns else ""),
+        "model": meta.get("model") or os.path.splitext(fname)[0],
+        "provider": meta.get("provider") or "",
+        "prompt": meta.get("prompt") or "",
+        "negative": meta.get("negative") or "",
+        "settings": meta.get("settings") if isinstance(meta.get("settings"), dict) else {},
+        "width": meta.get("width") or "",
+        "height": meta.get("height") or "",
+        "created_at": meta.get("created_at") or 0,
+        "updated_at": meta.get("updated_at") or 0,
+        "modified": bool(meta.get("modified", False)),
+    }
+
+
+def save_output_image(img_bytes: bytes, stem: str, ext: str, meta: dict = None) -> dict:
+    """Salva uma imagem nova em imagens/ e grava seu .json anexo com os dados de criação."""
+    meta = dict(meta or {})
+    with _gallery_lock:
+        out_path = _unique_output_image_path(stem, ext)
+        tmp_img = f"{out_path}.{os.getpid()}.tmp"
+        with open(tmp_img, "wb") as f:
+            f.write(img_bytes)
+        os.replace(tmp_img, out_path)
+        st = os.stat(out_path)
+        w, h = _image_dimensions(img_bytes)
+        width = int(meta.get("width") or w or 0) or ""
+        height = int(meta.get("height") or h or 0) or ""
+        now = time.time()
+        fname = os.path.basename(out_path)
+        record = {
+            "file_name": fname,
+            "model": meta.get("model") or os.path.splitext(fname)[0],
+            "provider": meta.get("provider") or "",
+            "prompt": meta.get("prompt") or "",
+            "negative": meta.get("negative") or "",
+            "settings": meta.get("settings") if isinstance(meta.get("settings"), dict) else {},
+            "width": width,
+            "height": height,
+            "created_at": float(meta.get("created_at") or now),
+            "updated_at": now,
+            "modified": False,
+            "file_size": st.st_size,
+            "file_mtime_ns": st.st_mtime_ns,
+            "sha256": hashlib.sha256(img_bytes).hexdigest(),
+        }
+        _write_json_atomic(sidecar_json_path(out_path), record)
+        return _public_gallery_item(out_path, record)
+
+
+def delete_output_image(name: str) -> bool:
+    """Remove a imagem e o seu .json anexo juntos (também limpa .json órfão se a imagem já saiu do disco)."""
+    if not isinstance(name, str) or not IMAGE_NAME_RE.match(name):
+        return False
+    with _gallery_lock:
+        base = os.path.realpath(get_output_images_dir())
+        img_path = os.path.realpath(os.path.join(base, name))
+        if os.path.dirname(img_path) != base:
+            return False
+        jpath = sidecar_json_path(img_path)
+        existed = os.path.isfile(img_path)
+        if existed:
+            os.remove(img_path)
+        if os.path.isfile(jpath):
+            try:
+                os.remove(jpath)
+            except OSError:
+                pass
+        return existed
+
+
+def sync_output_images() -> list:
+    """Sincroniza imagens/ e seus .json anexos:
+    - remove qualquer .json órfão cuja imagem não exista mais;
+    - cria o .json para imagens que ainda não tinham anexo (ex.: geradas antes ou via CLI);
+    - atualiza o .json se a imagem foi alterada/editada no disco;
+    - devolve a lista ordenada (mais recentes primeiro) para o painel."""
+    with _gallery_lock:
+        out_dir = get_output_images_dir()
+        try:
+            entries = os.listdir(out_dir)
+        except OSError:
+            return []
+
+        images_by_stem = {}
+        json_by_stem = {}
+        for name in entries:
+            full = os.path.join(out_dir, name)
+            if not os.path.isfile(full) or name.endswith(".tmp"):
+                continue
+            if IMAGE_NAME_RE.match(name):
+                key = os.path.splitext(name)[0].lower()
+                images_by_stem.setdefault(key, []).append(name)
+            elif re.match(r"^[\w.-]+\.json$", name, re.IGNORECASE):
+                key = os.path.splitext(name)[0].lower()
+                json_by_stem[key] = name
+
+        # 1) Remove qualquer .json órfão (sem imagem correspondente de mesmo nome-base)
+        for key, jname in list(json_by_stem.items()):
+            if key not in images_by_stem:
+                try:
+                    os.remove(os.path.join(out_dir, jname))
+                except OSError:
+                    pass
+                json_by_stem.pop(key, None)
+
+        # 2) Garante e atualiza o .json de cada imagem presente
+        items = []
+        for key, img_names in images_by_stem.items():
+            jname = json_by_stem.get(key)
+            existing = None
+            if jname:
+                try:
+                    with open(os.path.join(out_dir, jname), "r", encoding="utf-8") as f:
+                        loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        existing = loaded
+                except Exception:
+                    existing = None
+
+            # Se houver mais de uma extensão com o mesmo stem manual, prioriza a do .json ou a mais nova
+            chosen = img_names[0]
+            if len(img_names) > 1:
+                pref = existing.get("file_name") if existing else None
+                if pref in img_names:
+                    chosen = pref
+                else:
+                    chosen = max(img_names, key=lambda fn: os.path.getmtime(os.path.join(out_dir, fn)))
+
+            img_path = os.path.join(out_dir, chosen)
+            target_jpath = sidecar_json_path(img_path)
+            try:
+                st = os.stat(img_path)
+            except OSError:
+                continue
+
+            if existing is None:
+                try:
+                    with open(img_path, "rb") as f:
+                        raw = f.read()
+                except OSError:
+                    continue
+                w, h = _image_dimensions(raw)
+                inferred = _infer_legacy_meta(chosen)
+                record = {
+                    "file_name": chosen,
+                    "model": inferred.get("model") or os.path.splitext(chosen)[0],
+                    "provider": inferred.get("provider") or "",
+                    "prompt": "",
+                    "negative": "",
+                    "settings": inferred.get("settings") or {},
+                    "width": w or "",
+                    "height": h or "",
+                    "created_at": st.st_mtime,
+                    "updated_at": st.st_mtime,
+                    "modified": False,
+                    "file_size": st.st_size,
+                    "file_mtime_ns": st.st_mtime_ns,
+                    "sha256": hashlib.sha256(raw).hexdigest(),
+                }
+                _write_json_atomic(target_jpath, record)
+                if jname and os.path.normcase(os.path.join(out_dir, jname)) != os.path.normcase(target_jpath):
+                    try:
+                        os.remove(os.path.join(out_dir, jname))
+                    except OSError:
+                        pass
+            else:
+                record = dict(existing)
+                changed_stat = (
+                    record.get("file_size") != st.st_size
+                    or record.get("file_mtime_ns") != st.st_mtime_ns
+                    or record.get("file_name") != chosen
+                )
+                if changed_stat:
+                    try:
+                        with open(img_path, "rb") as f:
+                            raw = f.read()
+                    except OSError:
+                        continue
+                    new_hash = hashlib.sha256(raw).hexdigest()
+                    content_changed = (new_hash != record.get("sha256")) or (record.get("file_name") != chosen)
+                    w, h = _image_dimensions(raw)
+                    record["file_name"] = chosen
+                    record["file_size"] = st.st_size
+                    record["file_mtime_ns"] = st.st_mtime_ns
+                    record["sha256"] = new_hash
+                    if w and h:
+                        record["width"], record["height"] = w, h
+                    elif content_changed:
+                        record["width"], record["height"] = "", ""
+                    if content_changed:
+                        record["updated_at"] = st.st_mtime
+                        record["modified"] = True
+                    _write_json_atomic(target_jpath, record)
+                    if jname and os.path.normcase(os.path.join(out_dir, jname)) != os.path.normcase(target_jpath):
+                        try:
+                            os.remove(os.path.join(out_dir, jname))
+                        except OSError:
+                            pass
+
+            items.append(_public_gallery_item(img_path, record))
+
+        items.sort(key=lambda x: (float(x.get("created_at") or 0), x.get("file_name") or ""), reverse=True)
+        return items
 
 
 class StudioHandler(BaseHTTPRequestHandler):
@@ -393,6 +716,12 @@ class StudioHandler(BaseHTTPRequestHandler):
             self._send_json(200, comic_layouts.layouts())
             return
 
+        if parsed_path == "/api/images":
+            if not self._guard("imagens"):
+                return
+            self._send_json(200, {"ok": True, "images": sync_output_images()})
+            return
+
         if parsed_path == "/api/image/options":
             if not self._guard("imagens"):
                 return
@@ -438,6 +767,7 @@ class StudioHandler(BaseHTTPRequestHandler):
                 return
             img_path = resolve_output_image(urllib.parse.unquote(parsed_path[len("/imagens/"):]))
             if not img_path:
+                sync_output_images()
                 self._send_json(404, {"error": "Imagem nao encontrada"})
                 return
             with open(img_path, "rb") as f:
@@ -718,13 +1048,13 @@ class StudioHandler(BaseHTTPRequestHandler):
                 return
             ext = ".jpg" if m.group(1) == "jpeg" else "." + m.group(1)
             label = re.sub(r"[^\w-]", "_", req.get("label") or "pagina")[:40]
-            out_path = os.path.join(get_output_images_dir(), f"{label}_{int(time.time())}{ext}")
-            with open(out_path, "wb") as f:
-                f.write(data)
-            self._send_json(200, {"ok": True, "model": req.get("label") or "página montada", "width": "", "height": "",
-                                  "saved_path": out_path, "file_name": os.path.basename(out_path),
-                                  "url": "/imagens/" + urllib.parse.quote(os.path.basename(out_path)),
-                                  "data_url": req["data_url"], "prompt": req.get("prompt") or ""})
+            saved = save_output_image(data, f"{label}_{int(time.time())}", ext, {
+                "model": req.get("label") or "página montada",
+                "provider": "montagem",
+                "prompt": req.get("prompt") or "",
+                "settings": req.get("settings") if isinstance(req.get("settings"), dict) else {},
+            })
+            self._send_json(200, {"ok": True, **saved, "data_url": req["data_url"]})
             return
 
         if parsed_path in ("/api/image/open", "/api/image/delete"):
@@ -737,17 +1067,26 @@ class StudioHandler(BaseHTTPRequestHandler):
                 name = json.loads(body.decode("utf-8") or "{}").get("name")
             except Exception:
                 name = None
+            if parsed_path.endswith("/delete"):
+                try:
+                    removed = delete_output_image(name)
+                except Exception as e:
+                    self._send_json(500, {"ok": False, "message": f"Falhou: {e}"})
+                    return
+                if not removed:
+                    sync_output_images()
+                    self._send_json(404, {"ok": False, "message": "Imagem não encontrada (já foi excluída?)"})
+                    return
+                self._send_json(200, {"ok": True, "message": "Imagem e metadados excluídos."})
+                return
             img_path = resolve_output_image(name)
             if not img_path:
+                sync_output_images()
                 self._send_json(404, {"ok": False, "message": "Imagem não encontrada (já foi excluída?)"})
                 return
             try:
-                if parsed_path.endswith("/open"):
-                    os.startfile(img_path)  # abre no visualizador padrão do Windows
-                    self._send_json(200, {"ok": True, "message": "Imagem aberta."})
-                else:
-                    os.remove(img_path)
-                    self._send_json(200, {"ok": True, "message": "Imagem excluída."})
+                os.startfile(img_path)  # abre no visualizador padrão do Windows
+                self._send_json(200, {"ok": True, "message": "Imagem aberta."})
             except Exception as e:
                 self._send_json(500, {"ok": False, "message": f"Falhou: {e}"})
             return
@@ -910,23 +1249,17 @@ class StudioHandler(BaseHTTPRequestHandler):
 
         ext = ".png" if "png" in content_type else ".jpg"
         safe_tag = used_model.split("/")[-1].replace(".", "_")
-        out_path = os.path.join(get_output_images_dir(), f"studio_{safe_tag}_{int(time.time())}{ext}")
-        with open(out_path, "wb") as f:
-            f.write(img_bytes)
-
-        b64 = base64.b64encode(img_bytes).decode("ascii")
-        self._send_json(200, {
+        saved = save_output_image(img_bytes, f"studio_{safe_tag}_{int(time.time())}", ext, {
             "model": used_model,
             "prompt": prompt,
+            "negative": payload.get("negative") or "",
             "provider": "pollinations",
             "settings": {"model": model, "aspect": aspect},
             "width": w,
             "height": h,
-            "saved_path": out_path,
-            "file_name": os.path.basename(out_path),
-            "url": "/imagens/" + urllib.parse.quote(os.path.basename(out_path)),
-            "data_url": f"data:{content_type};base64,{b64}",
         })
+        b64 = base64.b64encode(img_bytes).decode("ascii")
+        self._send_json(200, {**saved, "data_url": f"data:{content_type};base64,{b64}"})
 
     def _handle_pixel_image(self, provider: str, payload: dict, prompt: str):
         """PixelLab / Retro Diffusion / Scenario: pode devolver várias imagens (direções, quadros, tiles)."""
@@ -975,7 +1308,6 @@ class StudioHandler(BaseHTTPRequestHandler):
             return
 
         stamp = int(time.time())
-        out_dir = get_output_images_dir()
         remote = provider not in image_providers.GENERATORS
         label_model = ("SD local" if provider == "sdlocal" else
                        (router.PROVIDERS.get(provider, {}).get("label", provider) if remote else f"{provider}/{mode or 'padrao'}"))
@@ -983,21 +1315,19 @@ class StudioHandler(BaseHTTPRequestHandler):
         images = []
         for i, (data, ext, label) in enumerate(results):
             safe = re.sub(r"[^\w-]", "_", f"{provider}_{mode}_{label}")[:60]
-            out_path = os.path.join(out_dir, f"{safe}_{stamp}_{i + 1}{ext}")
-            with open(out_path, "wb") as f:
-                f.write(data)
-            ctype = IMAGE_TYPES.get(ext, "image/gif" if ext == ".gif" else "image/png")
-            images.append({
+            saved = save_output_image(data, f"{safe}_{stamp}_{i + 1}", ext, {
                 "model": f"{label_model} · {label}",
                 "prompt": prompt,
+                "negative": payload.get("negative") or "",
                 "provider": provider,
                 "settings": {k: payload.get(k) for k in ("mode", "width", "height", "transparent", "model_id",
                                                           "model", "aspect", "loras", "fast", "strength")},
                 "width": opts.get("width") or "",
                 "height": opts.get("height") or "",
-                "saved_path": out_path,
-                "file_name": os.path.basename(out_path),
-                "url": "/imagens/" + urllib.parse.quote(os.path.basename(out_path)),
+            })
+            ctype = IMAGE_TYPES.get(ext, "image/gif" if ext == ".gif" else "image/png")
+            images.append({
+                **saved,
                 "data_url": f"data:{ctype};base64," + base64.b64encode(data).decode("ascii"),
             })
         self._send_json(200, {"images": images, **images[0]})
